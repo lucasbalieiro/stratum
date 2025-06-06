@@ -34,11 +34,12 @@ use super::super::{
     PoolChangerTrigger,
 };
 use async_channel::{Receiver, Sender};
-use binary_sv2::{Seq0255, U256};
-use codec_sv2::{HandshakeRole, Initiator};
 use error_handling::handle_result;
 use key_utils::Secp256k1PublicKey;
+use network_helpers_sv2::codec_sv2::{self, HandshakeRole, Initiator};
 use network_helpers_sv2::noise_connection::Connection;
+use roles_logic_sv2::binary_sv2::{self, Seq0255, U256};
+use roles_logic_sv2::framing_sv2;
 use roles_logic_sv2::{
     channel_logic::channel_factory::PoolChannelFactory,
     common_messages_sv2::{Protocol, Reconnect, SetupConnection},

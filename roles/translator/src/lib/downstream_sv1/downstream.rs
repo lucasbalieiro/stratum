@@ -705,7 +705,7 @@ impl IsDownstream for Downstream {
 
 #[cfg(test)]
 mod tests {
-    use binary_sv2::U256;
+    use roles_logic_sv2::binary_sv2::U256;
     use roles_logic_sv2::mining_sv2::Target;
 
     use super::*;

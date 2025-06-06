@@ -26,13 +26,15 @@ use super::{
     status,
 };
 use async_channel::{Receiver, Sender};
-use binary_sv2::U256;
-use codec_sv2::{HandshakeRole, Responder, StandardEitherFrame, StandardSv2Frame};
 use config_helpers::CoinbaseOutputError;
 use error_handling::handle_result;
 use key_utils::SignatureService;
+use network_helpers_sv2::codec_sv2::{
+    self, HandshakeRole, Responder, StandardEitherFrame, StandardSv2Frame,
+};
 use network_helpers_sv2::noise_connection::Connection;
 use nohash_hasher::BuildNoHashHasher;
+use roles_logic_sv2::binary_sv2::U256;
 use roles_logic_sv2::{
     channel_logic::channel_factory::PoolChannelFactory,
     common_properties::{CommonDownstreamData, IsDownstream, IsMiningDownstream},
@@ -726,8 +728,8 @@ impl Pool {
 
 #[cfg(test)]
 mod test {
-    use binary_sv2::{B0255, B064K};
     use ext_config::{Config, File, FileFormat};
+    use roles_logic_sv2::binary_sv2::{B0255, B064K};
     use std::convert::TryInto;
     use tracing::error;
 

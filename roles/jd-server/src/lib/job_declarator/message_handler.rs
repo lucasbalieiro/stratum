@@ -1,4 +1,4 @@
-use binary_sv2::{Decodable, Serialize, U256};
+use roles_logic_sv2::binary_sv2::{Decodable, Serialize, U256};
 use roles_logic_sv2::{
     handlers::{job_declaration::ParseJobDeclarationMessagesFromDownstream, SendTo_},
     job_declaration_sv2::{

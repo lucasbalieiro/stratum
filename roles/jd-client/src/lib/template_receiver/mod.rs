@@ -7,9 +7,11 @@
 //! and downstream subsystem.
 use super::{job_declarator::JobDeclarator, status, PoolChangerTrigger};
 use async_channel::{Receiver, Sender};
-use codec_sv2::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
 use error_handling::handle_result;
 use key_utils::Secp256k1PublicKey;
+use network_helpers_sv2::codec_sv2::{
+    HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame,
+};
 use network_helpers_sv2::noise_connection::Connection;
 use roles_logic_sv2::{
     handlers::{template_distribution::ParseTemplateDistributionMessagesFromServer, SendTo_},

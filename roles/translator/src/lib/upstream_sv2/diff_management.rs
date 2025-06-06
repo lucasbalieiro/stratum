@@ -14,7 +14,7 @@ use super::super::{
     error::ProxyResult,
     upstream_sv2::{EitherFrame, Message, StdFrame},
 };
-use binary_sv2::u256_from_int;
+use roles_logic_sv2::binary_sv2::u256_from_int;
 use roles_logic_sv2::{
     mining_sv2::UpdateChannel, parsers::Mining, utils::Mutex, Error as RolesLogicError,
 };

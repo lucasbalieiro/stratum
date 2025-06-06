@@ -161,6 +161,8 @@ mod tests {
 
     use super::*;
     use async_channel::{bounded, RecvError};
+    use network_helpers_sv2::codec_sv2;
+    use roles_logic_sv2::binary_sv2;
     use roles_logic_sv2::mining_sv2::OpenMiningChannelError;
 
     #[tokio::test]

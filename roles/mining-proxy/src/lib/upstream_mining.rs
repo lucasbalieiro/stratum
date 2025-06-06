@@ -15,7 +15,9 @@ use super::{
     selectors::{DownstreamMiningSelector, ProxyDownstreamMiningSelector as Prs},
     EXTRANONCE_RANGE_1_LENGTH,
 };
-use codec_sv2::{HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame};
+use network_helpers_sv2::codec_sv2::{
+    self, HandshakeRole, Initiator, StandardEitherFrame, StandardSv2Frame,
+};
 use network_helpers_sv2::noise_connection::Connection;
 use roles_logic_sv2::{
     channel_logic::{
