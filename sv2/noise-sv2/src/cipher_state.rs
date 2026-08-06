@@ -139,7 +139,6 @@ where
 // It stores the optional encryption key, the nonce, and the optional cipher instance itself. The
 // [`CipherState`] trait is implemented to provide a consistent interface for managing cipher
 // state across different AEAD ciphers.
-#[derive(Clone)]
 pub struct Cipher<C: AeadCipher> {
     // Optional 32-byte encryption key.
     k: Option<[u8; 32]>,
