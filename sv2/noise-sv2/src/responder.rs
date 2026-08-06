@@ -180,7 +180,7 @@ impl Responder {
     /// `std` and allow `no_std` environments to provide a hardware random number generator for
     /// example.
     #[inline]
-    pub fn new_with_rng<R: rand::Rng + ?Sized>(
+    pub fn new_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(
         a: Keypair,
         cert_validity: u32,
         rng: &mut R,
@@ -224,7 +224,7 @@ impl Responder {
     /// `std` and allow `no_std` environments to provide a hardware random number generator for
     /// example.
     #[inline]
-    pub fn from_authority_kp_with_rng<R: rand::Rng + ?Sized>(
+    pub fn from_authority_kp_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(
         public: &[u8; 32],
         private: &[u8; 32],
         cert_validity: Duration,

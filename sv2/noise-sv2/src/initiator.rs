@@ -175,7 +175,7 @@ impl Initiator {
     /// provided in order to not implicitely rely on `std` and allow `no_std` environments to
     /// provide a hardware random number generator for example.
     #[inline]
-    pub fn new_with_rng<R: rand::Rng + ?Sized>(
+    pub fn new_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(
         pk: Option<XOnlyPublicKey>,
         rng: &mut R,
     ) -> Box<Self> {
@@ -213,7 +213,7 @@ impl Initiator {
     /// `std` and allow `no_std` environments to provide a hardware random number generator for
     /// example.
     #[inline]
-    pub fn from_raw_k_with_rng<R: rand::Rng + ?Sized>(
+    pub fn from_raw_k_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(
         key: [u8; 32],
         rng: &mut R,
     ) -> Result<Box<Self>, Error> {
@@ -241,7 +241,9 @@ impl Initiator {
     /// `std` and allow `no_std` environments to provide a hardware random number generator for
     /// example.
     #[inline]
-    pub fn without_pk_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Result<Box<Self>, Error> {
+    pub fn without_pk_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(
+        rng: &mut R,
+    ) -> Result<Box<Self>, Error> {
         Ok(Self::new_with_rng(None, rng))
     }
 
