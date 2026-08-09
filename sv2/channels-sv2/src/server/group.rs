@@ -254,7 +254,9 @@ impl GroupChannel {
 
     /// Updates the group channel state with a new template.
     ///
-    /// If the template is a future template, the chain tip is not used.
+    /// If the template is a future template, the chain tip is not used. At most
+    /// `MAX_FUTURE_JOBS` (16) future jobs are kept: storing a new one beyond that limit evicts
+    /// the oldest.
     /// If the template is not a future template, the chain tip must be set.
     /// Returns an error if a non-future job cannot be created due to missing chain tip.
     ///
@@ -355,6 +357,7 @@ mod tests {
             jobs::{
                 error::JobFactoryError,
                 factory::{MAX_COINBASE_PREFIX_SIZE, MAX_SCRIPT_SIG_SIZE},
+                job_store::MAX_FUTURE_JOBS,
             },
         },
     };
@@ -907,5 +910,41 @@ mod tests {
             res.unwrap_err(),
             GroupChannelError::JobFactoryError(JobFactoryError::ScriptSigSizeTooLarge)
         ));
+    }
+
+    #[test]
+    fn test_future_template_storage_is_bounded() {
+        let mut group_channel = GroupChannel::new(1, 32, None, None).unwrap();
+
+        let flood_size = 10_000u64;
+        for template_id in 0..flood_size {
+            let template = NewTemplate {
+                template_id,
+                future_template: true,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![].try_into().unwrap(),
+                coinbase_tx_input_sequence: u32::MAX,
+                coinbase_tx_value_remaining: 0,
+                coinbase_tx_outputs_count: 0,
+                coinbase_tx_outputs: vec![].try_into().unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+
+            group_channel.on_new_template(template, vec![]).unwrap();
+        }
+
+        // only the newest MAX_FUTURE_JOBS templates survive; the oldest were evicted
+        for template_id in 0..flood_size - MAX_FUTURE_JOBS as u64 {
+            assert!(group_channel
+                .get_future_job_id_from_template_id(template_id)
+                .is_none());
+        }
+        for template_id in flood_size - MAX_FUTURE_JOBS as u64..flood_size {
+            assert!(group_channel
+                .get_future_job_id_from_template_id(template_id)
+                .is_some());
+        }
     }
 }

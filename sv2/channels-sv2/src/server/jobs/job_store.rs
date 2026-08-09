@@ -10,10 +10,19 @@
 //! - **Retired Extranonce Prefixes**: Holds on to extranonce prefixes that were rotated out of the
 //!   channel while jobs created under them can still accept shares, so that their allocator slots
 //!   are not handed to another channel too early.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use super::Job;
 use crate::extranonce_manager::ExtranoncePrefix;
+
+/// Maximum number of future jobs a server channel retains while waiting for a
+/// template-distribution `SetNewPrevHash`.
+///
+/// Template Distribution peers control `template_id`, so future jobs are stored under a
+/// peer-controlled key. Bounding the map prevents a malicious or buggy peer from exhausting
+/// server memory by streaming future templates while withholding `SetNewPrevHash`. On overflow,
+/// the oldest future job is evicted.
+pub(crate) const MAX_FUTURE_JOBS: usize = 16;
 
 /// Internal implementation for tracking mining job states in SV2 server channels.
 ///
@@ -22,6 +31,9 @@ use crate::extranonce_manager::ExtranoncePrefix;
 #[derive(Debug)]
 pub(crate) struct JobStore<T: Job> {
     future_template_to_job_id: HashMap<u64, u32>,
+    // Future template IDs ordered by receipt, oldest at the front and newest at the back.
+    // Replaced IDs move to the back; overflow evicts from the front.
+    future_template_order: VecDeque<u64>,
     // Future jobs are indexed with job_id (u32)
     future_jobs: HashMap<u32, T>,
     active_job: Option<T>,
@@ -40,6 +52,7 @@ impl<T: Job> JobStore<T> {
     pub fn new() -> Self {
         Self {
             future_template_to_job_id: HashMap::new(),
+            future_template_order: VecDeque::new(),
             future_jobs: HashMap::new(),
             active_job: None,
             past_jobs: HashMap::new(),
@@ -61,6 +74,9 @@ impl<T: Job> JobStore<T> {
     /// If the template ID was already mapped to a future job, that job is dropped, since it could
     /// never be activated again (activation resolves jobs through this mapping).
     ///
+    /// At most `MAX_FUTURE_JOBS` future jobs are kept: storing a new one beyond that limit evicts
+    /// the oldest, since template IDs are peer-controlled and must not grow memory unboundedly.
+    ///
     /// Returns the new job's ID.
     pub fn add_future_job(&mut self, template_id: u64, new_job: T) -> u32 {
         let new_job_id = new_job.get_job_id();
@@ -71,6 +87,21 @@ impl<T: Job> JobStore<T> {
             self.future_jobs.remove(&old_job_id);
         }
         self.future_jobs.insert(new_job_id, new_job);
+
+        // a replaced template_id moves to the back of the eviction order
+        self.future_template_order.retain(|id| *id != template_id);
+        self.future_template_order.push_back(template_id);
+
+        if self.future_jobs.len() > MAX_FUTURE_JOBS {
+            if let Some(evicted_template_id) = self.future_template_order.pop_front() {
+                if let Some(evicted_job_id) =
+                    self.future_template_to_job_id.remove(&evicted_template_id)
+                {
+                    self.future_jobs.remove(&evicted_job_id);
+                }
+            }
+        }
+
         new_job_id
     }
 
@@ -112,6 +143,7 @@ impl<T: Job> JobStore<T> {
         self.active_job = Some(future_job);
         self.future_jobs.clear();
         self.future_template_to_job_id.clear();
+        self.future_template_order.clear();
 
         self.mark_past_jobs_as_stale();
 
@@ -227,6 +259,35 @@ mod tests {
         }
 
         fn activate(&mut self, _prev_hash_header_timestamp: u32) {}
+    }
+
+    #[test]
+    fn future_jobs_are_bounded() {
+        let mut store = JobStore::new();
+
+        let flood_size = 10_000u64;
+        for template_id in 0..flood_size {
+            store.add_future_job(
+                template_id,
+                DummyJob {
+                    job_id: template_id as u32,
+                },
+            );
+        }
+
+        // only the newest MAX_FUTURE_JOBS survive; the oldest were evicted
+        for template_id in 0..flood_size - MAX_FUTURE_JOBS as u64 {
+            assert!(store
+                .get_future_job_id_from_template_id(template_id)
+                .is_none());
+            assert!(store.get_future_job(template_id as u32).is_none());
+        }
+        for template_id in flood_size - MAX_FUTURE_JOBS as u64..flood_size {
+            assert!(store
+                .get_future_job_id_from_template_id(template_id)
+                .is_some());
+            assert!(store.get_future_job(template_id as u32).is_some());
+        }
     }
 
     #[test]

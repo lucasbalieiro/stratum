@@ -472,7 +472,9 @@ impl ExtendedChannel {
 
     /// Updates the channel state with a new template.
     ///
-    /// If the template is a future template, the chain tip is not used.
+    /// If the template is a future template, the chain tip is not used. At most
+    /// `MAX_FUTURE_JOBS` (16) future jobs are kept: storing a new one beyond that limit evicts
+    /// the oldest.
     /// If the template is not a future template, the chain tip must be set.
     ///
     /// Only meant for usage on a Sv2 Pool Server or a Sv2 Job Declaration Client,
@@ -942,6 +944,7 @@ mod tests {
             jobs::{
                 extended::ExtendedJob,
                 factory::{MAX_COINBASE_PREFIX_SIZE, MAX_SCRIPT_SIG_SIZE},
+                job_store::MAX_FUTURE_JOBS,
             },
             share_accounting::{ShareValidationError, ShareValidationResult},
         },
@@ -3067,6 +3070,82 @@ mod tests {
             .unwrap(),
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
+        }
+    }
+
+    #[test]
+    fn test_future_template_storage_is_bounded() {
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            4u16,
+            100,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let script = ScriptBuf::from(script_bytes);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: script,
+        }];
+
+        let flood_size = 10_000u64;
+        for template_id in 0..flood_size {
+            let template = NewTemplate {
+                template_id,
+                future_template: true,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![82, 0].try_into().unwrap(),
+                coinbase_tx_input_sequence: 4294967295,
+                coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+                coinbase_tx_outputs_count: 1,
+                coinbase_tx_outputs: vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113,
+                    209, 222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153,
+                    98, 180, 139, 235, 216, 54, 151, 78, 140, 249,
+                ]
+                .try_into()
+                .unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+
+            channel
+                .on_new_template(template, coinbase_reward_outputs.clone())
+                .unwrap();
+        }
+
+        // only the newest MAX_FUTURE_JOBS templates survive; the oldest were evicted
+        for template_id in 0..flood_size - MAX_FUTURE_JOBS as u64 {
+            assert!(channel
+                .get_future_job_id_from_template_id(template_id)
+                .is_none());
+        }
+        for template_id in flood_size - MAX_FUTURE_JOBS as u64..flood_size {
+            assert!(channel
+                .get_future_job_id_from_template_id(template_id)
+                .is_some());
         }
     }
 }
