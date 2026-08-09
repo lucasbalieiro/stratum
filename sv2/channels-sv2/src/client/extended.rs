@@ -4,7 +4,7 @@
 //! **Extended Channel** within a mining client.
 
 extern crate alloc;
-use super::{HashMap, MAX_FUTURE_JOBS};
+use super::{HashMap, MAX_FUTURE_JOBS, MAX_PAST_JOBS};
 use crate::{
     bip141::try_strip_bip141,
     chain_tip::ChainTip,
@@ -60,7 +60,8 @@ pub type ExtendedJob = (NewExtendedMiningJobOwned, Vec<u8>, Target);
 /// - Future jobs (indexed by `job_id`, capped at [`MAX_FUTURE_JOBS`]) to be activated by a
 ///   [`SetNewPrevHash`](SetNewPrevHashMp) message.
 /// - The currently active job.
-/// - Past jobs (previously active under the current chain tip, indexed by `job_id`).
+/// - Past jobs (previously active under the current chain tip, indexed by `job_id`, capped at
+///   [`MAX_PAST_JOBS`]).
 /// - Stale jobs (previously active and past jobs under the previous chain tip, indexed by
 ///   `job_id`).
 /// - Share accounting for the channel (as tracked by the client).
@@ -82,6 +83,9 @@ pub struct ExtendedChannel {
     active_job: Option<ExtendedJob>,
     // past jobs are indexed with job_id (u32)
     past_jobs: HashMap<u32, ExtendedJob>,
+    // Past job IDs ordered by retirement, oldest at the front and newest at the back.
+    // Replaced IDs move to the back; overflow evicts from the front.
+    past_job_order: VecDeque<u32>,
     // stale jobs are indexed with job_id (u32)
     stale_jobs: HashMap<u32, ExtendedJob>,
     share_accounting: ShareAccounting,
@@ -111,6 +115,7 @@ impl ExtendedChannel {
             future_job_order: VecDeque::new(),
             active_job: None,
             past_jobs: HashMap::new(),
+            past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
@@ -242,6 +247,8 @@ impl ExtendedChannel {
     }
 
     /// Returns an iterator over all past jobs for this channel.
+    ///
+    /// At most [`MAX_PAST_JOBS`] jobs are kept (oldest evicted first).
     pub fn get_past_jobs(&self) -> impl Iterator<Item = (&u32, &ExtendedJob)> + '_ {
         self.past_jobs.iter()
     }
@@ -252,6 +259,8 @@ impl ExtendedChannel {
     }
 
     /// Returns the number of past jobs tracked by this channel.
+    ///
+    /// At most [`MAX_PAST_JOBS`] jobs are kept (oldest evicted first).
     pub fn get_past_jobs_count(&self) -> usize {
         self.past_jobs.len()
     }
@@ -302,6 +311,8 @@ impl ExtendedChannel {
     ///   At most [`MAX_FUTURE_JOBS`] future jobs are kept: storing a new one beyond that limit
     ///   evicts the oldest.
     /// - Otherwise, the job is activated and previous active job moves to the past jobs list.
+    ///   At most [`MAX_PAST_JOBS`] past jobs are kept: retiring one beyond that limit evicts the
+    ///   oldest.
     pub fn on_new_extended_mining_job(
         &mut self,
         new_extended_mining_job: NewExtendedMiningJobOwned,
@@ -329,8 +340,8 @@ impl ExtendedChannel {
 
         match new_extended_mining_job.min_ntime.clone().into_inner() {
             Some(_min_ntime) => {
-                if let Some(active_job) = self.active_job.clone() {
-                    self.past_jobs.insert(active_job.0.job_id, active_job);
+                if let Some(active_job) = self.active_job.take() {
+                    self.retire_job_to_past(active_job);
                 }
                 self.active_job = Some((
                     new_extended_mining_job,
@@ -366,6 +377,9 @@ impl ExtendedChannel {
 
     /// Handles a `SetCustomMiningJobSuccess` message from upstream.
     /// Requires the corresponding `SetCustomMiningJob`.
+    ///
+    /// The previous active job (if any) moves to the past jobs list. At most [`MAX_PAST_JOBS`]
+    /// past jobs are kept: retiring one beyond that limit evicts the oldest.
     ///
     /// To be used by a Sv2 Job Declarator Client
     pub fn on_set_custom_mining_job_success(
@@ -461,8 +475,8 @@ impl ExtendedChannel {
             merkle_path: set_custom_mining_job.merkle_path,
         };
 
-        if let Some(active_job) = self.active_job.clone() {
-            self.past_jobs.insert(active_job.0.job_id, active_job);
+        if let Some(active_job) = self.active_job.take() {
+            self.retire_job_to_past(active_job);
         }
         self.active_job = Some((
             new_extended_mining_job,
@@ -471,6 +485,24 @@ impl ExtendedChannel {
         ));
 
         Ok(())
+    }
+
+    // Moves a displaced job into past jobs, evicting the oldest past job beyond
+    // [`MAX_PAST_JOBS`]. A share against an evicted job degrades to `InvalidJobId` instead of
+    // `Stale`, acceptable within a single tip window.
+    fn retire_job_to_past(&mut self, job: ExtendedJob) {
+        let job_id = job.0.job_id;
+        self.past_jobs.insert(job_id, job);
+
+        // a replaced job_id moves to the back of the eviction order
+        self.past_job_order.retain(|id| *id != job_id);
+        self.past_job_order.push_back(job_id);
+
+        if self.past_jobs.len() > MAX_PAST_JOBS {
+            if let Some(evicted_job_id) = self.past_job_order.pop_front() {
+                self.past_jobs.remove(&evicted_job_id);
+            }
+        }
     }
 
     /// Handles a [`ChainTip`] update.
@@ -499,7 +531,7 @@ impl ExtendedChannel {
         // SetCustomMiningJobSuccess would still pass the is_active_job check in validate_share
         // and be re-hashed against the new prev_hash with the old job's coinbase/merkle path.
         if let Some(active_job) = self.active_job.take() {
-            self.past_jobs.insert(active_job.0.job_id, active_job);
+            self.retire_job_to_past(active_job);
         }
 
         // mark all past jobs as stale, so that shares are not propagated
@@ -507,6 +539,7 @@ impl ExtendedChannel {
 
         // clear past jobs, as we're no longer going to propagate shares for them
         self.past_jobs.clear();
+        self.past_job_order.clear();
 
         // clear seen shares, as shares for past chain tip will be rejected as stale
         self.share_accounting.flush_seen_shares();
@@ -544,8 +577,7 @@ impl ExtendedChannel {
         // than silently dropped, otherwise a late share for it would be rejected as
         // InvalidJobId instead of Stale
         if let Some(previously_active_job) = previously_active_job {
-            self.past_jobs
-                .insert(previously_active_job.0.job_id, previously_active_job);
+            self.retire_job_to_past(previously_active_job);
         }
 
         // all other future jobs are now useless
@@ -557,6 +589,7 @@ impl ExtendedChannel {
 
         // clear past jobs, as we're no longer going to propagate shares for them
         self.past_jobs.clear();
+        self.past_job_order.clear();
 
         // clear seen shares, as shares for past chain tip will be rejected as stale
         self.share_accounting.flush_seen_shares();
@@ -757,7 +790,7 @@ mod tests {
             error::ExtendedChannelError,
             extended::ExtendedChannel,
             share_accounting::{ShareValidationError, ShareValidationResult},
-            MAX_FUTURE_JOBS,
+            MAX_FUTURE_JOBS, MAX_PAST_JOBS,
         },
         extranonce_manager::ExtranoncePrefix,
     };
@@ -993,6 +1026,67 @@ mod tests {
             min_ntime: 1746839905,
         };
         channel.on_set_new_prev_hash(set_new_prev_hash).unwrap();
+    }
+
+    #[test]
+    fn test_past_jobs_are_bounded() {
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            4u16,
+        );
+
+        let active_job = NewExtendedMiningJob {
+            channel_id,
+            job_id: 0,
+            min_ntime: Sv2Option::new(Some(1746839905)),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let flood_size = 10_000u32;
+        for job_id in 0..flood_size {
+            let mut job = active_job.clone();
+            job.job_id = job_id;
+            channel.on_new_extended_mining_job(job).unwrap();
+        }
+
+        assert_eq!(channel.get_past_jobs_count(), MAX_PAST_JOBS);
+
+        // the last job is active; of the retired ones, only the newest MAX_PAST_JOBS survive
+        for job_id in 0..flood_size - 1 - MAX_PAST_JOBS as u32 {
+            assert!(channel.get_past_job(job_id).is_none());
+        }
+        for job_id in flood_size - 1 - MAX_PAST_JOBS as u32..flood_size - 1 {
+            assert!(channel.get_past_job(job_id).is_some());
+        }
     }
 
     #[test]
