@@ -40,7 +40,7 @@ use noise_sv2::AEAD_MAC_LEN;
 use tracing::error;
 
 #[cfg(feature = "noise_sv2")]
-use crate::{Error, Result, State};
+use crate::{Error, Result, State, TransportEncryptState};
 
 #[cfg(not(feature = "with_buffer_pool"))]
 use buffer_sv2::{Buffer as IsBuffer, BufferFromSystemMemory as Buffer};
@@ -136,6 +136,21 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
             State::HandShake(_) => self.while_handshaking(item)?,
             State::NotInitialized(_) => self.while_handshaking(item)?,
         };
+
+        // Clear sv2_buffer
+        self.sv2_buffer.get_data_owned();
+        // Return noise_buffer
+        Ok(self.noise_buffer.get_data_owned())
+    }
+
+    /// Encodes an Sv2 frame and encrypts it with the encrypting half of a split [`State`].
+    #[inline]
+    pub fn encode_transport(
+        &mut self,
+        item: Item<T, B>,
+        state: &mut TransportEncryptState,
+    ) -> Result<B::Slice> {
+        self.encrypt_frame(item, |buf| state.encrypt(buf))?;
 
         // Clear sv2_buffer
         self.sv2_buffer.get_data_owned();

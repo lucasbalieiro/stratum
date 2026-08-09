@@ -47,7 +47,7 @@ use crate::error::Result;
 
 use crate::Error::MissingBytes;
 #[cfg(feature = "noise_sv2")]
-use crate::State;
+use crate::{State, TransportDecryptState};
 
 #[cfg(not(feature = "with_buffer_pool"))]
 use buffer_sv2::{Buffer as IsBuffer, BufferFromSystemMemory as Buffer};
@@ -157,6 +157,15 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
                 self.next_transport(|buf| engine.decrypt(buf).map_err(Into::into))
             }
         }
+    }
+
+    /// Attempts to decode the next Noise frame with the decrypting half of a split [`State`].
+    #[inline]
+    pub fn next_transport_frame(
+        &mut self,
+        state: &mut TransportDecryptState,
+    ) -> Result<Frame<T, B::Slice>> {
+        self.next_transport(|buf| state.decrypt(buf))
     }
 
     // Decodes a transport-mode frame, decrypting through `decrypt`.

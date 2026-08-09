@@ -40,9 +40,11 @@ extern crate alloc;
 #[cfg(feature = "noise_sv2")]
 use alloc::boxed::Box;
 #[cfg(feature = "noise_sv2")]
+use buffer_sv2::AeadBuffer;
+#[cfg(feature = "noise_sv2")]
 use framing_sv2::framing::{handshake_message_to_frame as h2f, HandShakeFrame};
 #[cfg(feature = "noise_sv2")]
-use noise_sv2::NoiseEngine;
+use noise_sv2::{NoiseDecryptor, NoiseEncryptor, NoiseEngine};
 
 mod decoder;
 mod encoder;
@@ -117,6 +119,42 @@ pub enum State {
     /// protocol in transport mode. The [`NoiseEngine`] object is responsible for handling the
     /// encryption and decryption of data.
     Transport(NoiseEngine),
+}
+
+/// The encrypting half of a transport-mode [`State`], used by the encoder's transport path.
+#[cfg(feature = "noise_sv2")]
+#[derive(Debug)]
+pub struct TransportEncryptState {
+    encryption: NoiseEncryptor,
+}
+
+#[cfg(feature = "noise_sv2")]
+impl TransportEncryptState {
+    // Encrypts `msg` in place with the outgoing cipher.
+    pub(crate) fn encrypt<T: AeadBuffer>(
+        &mut self,
+        msg: &mut T,
+    ) -> core::result::Result<(), Error> {
+        self.encryption.encrypt(msg).map_err(Into::into)
+    }
+}
+
+/// The decrypting half of a transport-mode [`State`], used by the decoder's transport path.
+#[cfg(feature = "noise_sv2")]
+#[derive(Debug)]
+pub struct TransportDecryptState {
+    decryption: NoiseDecryptor,
+}
+
+#[cfg(feature = "noise_sv2")]
+impl TransportDecryptState {
+    // Decrypts `msg` in place with the incoming cipher.
+    pub(crate) fn decrypt<T: AeadBuffer>(
+        &mut self,
+        msg: &mut T,
+    ) -> core::result::Result<(), Error> {
+        self.decryption.decrypt(msg).map_err(Into::into)
+    }
 }
 
 #[cfg(feature = "noise_sv2")]
@@ -276,6 +314,22 @@ impl State {
     /// Once in [`State::Transport`] mode, the codec is fully operational for secure communication.
     pub fn with_transport_mode(tm: NoiseEngine) -> Self {
         Self::Transport(tm)
+    }
+
+    /// Splits a transport-mode state into its encrypting and decrypting halves, consuming it.
+    pub fn split_transport(
+        self,
+    ) -> core::result::Result<(TransportEncryptState, TransportDecryptState), Error> {
+        match self {
+            Self::Transport(engine) => {
+                let (encryption, decryption) = engine.into_split();
+                Ok((
+                    TransportEncryptState { encryption },
+                    TransportDecryptState { decryption },
+                ))
+            }
+            _ => Err(Error::UnexpectedNoiseState),
+        }
     }
 }
 
