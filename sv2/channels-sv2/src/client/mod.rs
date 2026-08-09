@@ -20,6 +20,20 @@ pub mod standard;
 /// overflow, the oldest future job is evicted.
 pub const MAX_FUTURE_JOBS: usize = 16;
 
+/// Maximum number of past jobs a client channel retains under the current chain tip.
+///
+/// Upstream servers control the job stream, so a malicious or buggy server can force one retained
+/// past job per immediately-active job message. Bounding this map prevents unbounded memory
+/// growth. Past jobs exist for late-share validation, so the cap must stay nonzero; shares
+/// against an evicted job degrade to
+/// [`InvalidJobId`](crate::client::share_accounting::ShareValidationError::InvalidJobId) within a
+/// single tip window. On overflow, the oldest past job is evicted.
+///
+/// 50 matches the server-side cap, so a proxy's client channel never evicts a job its upstream
+/// still accepts, and buys ample headroom over the reachable submit depth of ~1-2 past jobs at a
+/// small measured memory cost — see the load-test data in PR #2290.
+pub const MAX_PAST_JOBS: usize = 50;
+
 // Type aliases that switch between `std::collections` and `hashbrown`
 // depending on whether the `no_std` feature is enabled.
 #[cfg(not(feature = "no_std"))]
