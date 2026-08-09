@@ -39,8 +39,6 @@ use framing_sv2::{
 #[cfg(feature = "noise_sv2")]
 use framing_sv2::{ENCRYPTED_SV2_FRAME_HEADER_SIZE, SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
 #[cfg(feature = "noise_sv2")]
-use noise_sv2::NoiseEngine;
-#[cfg(feature = "noise_sv2")]
 use noise_sv2::NOISE_FRAME_HEADER_SIZE;
 
 #[cfg(feature = "noise_sv2")]
@@ -155,31 +153,40 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
                     }
                 }
             }
-            State::Transport(noise_engine) => {
-                let hint = if IsBuffer::len(&self.sv2_buffer) < SV2_FRAME_HEADER_SIZE {
-                    let len = IsBuffer::len(&self.noise_buffer);
-                    let src = self.noise_buffer.get_data_by_ref(len);
-                    if src.len() < ENCRYPTED_SV2_FRAME_HEADER_SIZE {
-                        ENCRYPTED_SV2_FRAME_HEADER_SIZE - src.len()
-                    } else {
-                        0
-                    }
-                } else {
-                    let src = self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE);
-                    let header = Header::from_bytes(src)?;
-                    header.encrypted_len() - IsBuffer::len(&self.noise_buffer)
-                };
+            State::Transport(engine) => {
+                self.next_transport(|buf| engine.decrypt(buf).map_err(Into::into))
+            }
+        }
+    }
 
-                match hint {
-                    0 => {
-                        self.missing_noise_b = ENCRYPTED_SV2_FRAME_HEADER_SIZE;
-                        self.decode_noise_frame(noise_engine)
-                    }
-                    _ => {
-                        self.missing_noise_b = hint;
-                        Err(Error::MissingBytes(hint))
-                    }
-                }
+    // Decodes a transport-mode frame, decrypting through `decrypt`.
+    #[inline]
+    fn next_transport(
+        &mut self,
+        decrypt: impl FnMut(&mut B) -> Result<()>,
+    ) -> Result<Frame<T, B::Slice>> {
+        let hint = if IsBuffer::len(&self.sv2_buffer) < SV2_FRAME_HEADER_SIZE {
+            let len = IsBuffer::len(&self.noise_buffer);
+            let src = self.noise_buffer.get_data_by_ref(len);
+            if src.len() < ENCRYPTED_SV2_FRAME_HEADER_SIZE {
+                ENCRYPTED_SV2_FRAME_HEADER_SIZE - src.len()
+            } else {
+                0
+            }
+        } else {
+            let src = self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE);
+            let header = Header::from_bytes(src)?;
+            header.encrypted_len() - IsBuffer::len(&self.noise_buffer)
+        };
+
+        match hint {
+            0 => {
+                self.missing_noise_b = ENCRYPTED_SV2_FRAME_HEADER_SIZE;
+                self.decode_noise_frame(decrypt)
+            }
+            _ => {
+                self.missing_noise_b = hint;
+                Err(Error::MissingBytes(hint))
             }
         }
     }
@@ -255,7 +262,10 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
     // additional bytes required to fully decrypt the frame. Once all bytes are available, the
     // decryption process completes and the frame can be successfully decoded.
     #[inline]
-    fn decode_noise_frame(&mut self, noise_engine: &mut NoiseEngine) -> Result<Frame<T, B::Slice>> {
+    fn decode_noise_frame(
+        &mut self,
+        mut decrypt: impl FnMut(&mut B) -> Result<()>,
+    ) -> Result<Frame<T, B::Slice>> {
         match (
             IsBuffer::len(&self.noise_buffer),
             IsBuffer::len(&self.sv2_buffer),
@@ -268,7 +278,7 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
                     .get_writable(ENCRYPTED_SV2_FRAME_HEADER_SIZE);
                 decrypted_header.copy_from_slice(src.as_ref());
                 self.sv2_buffer.as_ref();
-                noise_engine.decrypt(&mut self.sv2_buffer)?;
+                decrypt(&mut self.sv2_buffer)?;
                 let header =
                     Header::from_bytes(self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE))?;
                 self.missing_noise_b = header.encrypted_len();
@@ -292,7 +302,7 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
                     let decrypted_payload = self.sv2_buffer.get_writable(end - start);
                     decrypted_payload.copy_from_slice(&encrypted_payload.as_ref()[start..end]);
                     self.sv2_buffer.danger_set_start(decrypted_len);
-                    noise_engine.decrypt(&mut self.sv2_buffer)?;
+                    decrypt(&mut self.sv2_buffer)?;
                     start = end;
                     end = (start + SV2_FRAME_CHUNK_SIZE).min(encrypted_payload_len);
                     decrypted_len += self.sv2_buffer.as_ref().len();
