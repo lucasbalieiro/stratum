@@ -115,6 +115,41 @@ impl<T: Job> JobStore<T> {
         self.active_job = Some(job);
     }
 
+    /// Replaces the active job, dropping the previous active job (if any).
+    ///
+    /// For channels that never validate shares (group channels), where retaining the replaced
+    /// job would be pure memory growth under peer-controlled message streams.
+    pub fn replace_active_job(&mut self, job: T) {
+        self.active_job = Some(job);
+    }
+
+    /// Activates a future job given by template ID and header timestamp, dropping the previously
+    /// active job (if any) instead of retiring it to past jobs.
+    /// Returns `true` if successful, `false` if not found.
+    ///
+    /// For channels that never validate shares (group channels), which keep no past or stale
+    /// job history.
+    pub fn activate_future_job_replacing_active(
+        &mut self,
+        template_id: u64,
+        prev_hash_header_timestamp: u32,
+    ) -> bool {
+        // the active job is only dropped once activation is known to succeed, so that a failed
+        // activation does not corrupt channel state
+        let activatable = self
+            .future_template_to_job_id
+            .get(&template_id)
+            .is_some_and(|job_id| self.future_jobs.contains_key(job_id));
+        if !activatable {
+            return false;
+        }
+
+        // with no active job left to retire, the activation below leaves past and stale jobs
+        // empty
+        self.active_job = None;
+        self.activate_future_job(template_id, prev_hash_header_timestamp)
+    }
+
     /// Activates a future job given by template ID and header timestamp.
     /// Returns `true` if successful, `false` if not found.
     pub fn activate_future_job(

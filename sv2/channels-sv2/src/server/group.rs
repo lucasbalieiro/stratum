@@ -257,7 +257,9 @@ impl GroupChannel {
     /// If the template is a future template, the chain tip is not used. At most
     /// `MAX_FUTURE_JOBS` (16) future jobs are kept: storing a new one beyond that limit evicts
     /// the oldest.
-    /// If the template is not a future template, the chain tip must be set.
+    /// If the template is not a future template, the chain tip must be set, and the new job
+    /// replaces the active job. The replaced job is dropped: group channels never validate
+    /// shares, so no past-job history is kept.
     /// Returns an error if a non-future job cannot be created due to missing chain tip.
     ///
     /// Returns [`GroupChannelError::JobFactoryError`] wrapping
@@ -304,7 +306,9 @@ impl GroupChannel {
                                 self.full_extranonce_size,
                             )
                             .map_err(GroupChannelError::JobFactoryError)?;
-                        self.job_store.add_active_job(new_job);
+                        // group channels never validate shares, so the replaced active job is
+                        // dropped instead of being retained as a past job
+                        self.job_store.replace_active_job(new_job);
                     }
                 }
             }
@@ -316,7 +320,8 @@ impl GroupChannel {
     /// (Template Distribution Protocol variant).
     ///
     /// If there is a future job matching the `template_id` specified in `SetNewPrevHash`,
-    /// this future job is "activated" and set as the active job.
+    /// this future job is "activated" and set as the active job. The previously active job is
+    /// dropped: group channels never validate shares, so no past or stale job history is kept.
     ///
     /// Updates the chain tip for the group channel.
     /// Returns an error if no matching future job is found, leaving the chain tip untouched.
@@ -331,7 +336,9 @@ impl GroupChannel {
             true => {
                 // activation is a no-op when no future job matches the template id, so the
                 // chain tip must only advance once we know a job was actually activated.
-                if !self.job_store.activate_future_job(
+                // group channels never validate shares, so the displaced active job is
+                // dropped instead of being retired into past/stale history
+                if !self.job_store.activate_future_job_replacing_active(
                     set_new_prev_hash.template_id,
                     set_new_prev_hash.header_timestamp,
                 ) {
@@ -946,5 +953,82 @@ mod tests {
                 .get_future_job_id_from_template_id(template_id)
                 .is_some());
         }
+    }
+
+    #[test]
+    fn test_replaced_active_job_is_dropped() {
+        let mut group_channel = GroupChannel::new(1, 32, None, None).unwrap();
+        group_channel.set_chain_tip(ChainTip::new([0; 32].into(), 0x1d00ffff, 1));
+
+        let flood_size = 10_000u64;
+        for template_id in 0..flood_size {
+            let template = NewTemplate {
+                template_id,
+                future_template: false,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![].try_into().unwrap(),
+                coinbase_tx_input_sequence: u32::MAX,
+                coinbase_tx_value_remaining: 0,
+                coinbase_tx_outputs_count: 0,
+                coinbase_tx_outputs: vec![].try_into().unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+
+            group_channel.on_new_template(template, vec![]).unwrap();
+        }
+
+        // group channels never validate shares, so replaced active jobs must be dropped
+        // instead of retained as past jobs
+        for job_id in 0..=flood_size as u32 {
+            assert!(group_channel.job_store.get_past_job(job_id).is_none());
+            assert!(group_channel.job_store.get_stale_job(job_id).is_none());
+        }
+        assert!(group_channel.get_active_job().is_some());
+
+        // future job activation must also drop the displaced active job, rather than retiring
+        // it into past/stale history
+        let future_template = NewTemplate {
+            template_id: flood_size,
+            future_template: true,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![].try_into().unwrap(),
+            coinbase_tx_input_sequence: u32::MAX,
+            coinbase_tx_value_remaining: 0,
+            coinbase_tx_outputs_count: 0,
+            coinbase_tx_outputs: vec![].try_into().unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+        group_channel
+            .on_new_template(future_template, vec![])
+            .unwrap();
+
+        let set_new_prev_hash = SetNewPrevHash {
+            template_id: flood_size,
+            prev_hash: [
+                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+            ]
+            .into(),
+            header_timestamp: 1746839905,
+            n_bits: 503543726,
+            target: [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                174, 119, 3, 0, 0,
+            ]
+            .into(),
+        };
+        group_channel
+            .on_set_new_prev_hash(set_new_prev_hash)
+            .unwrap();
+
+        for job_id in 0..=flood_size as u32 + 1 {
+            assert!(group_channel.job_store.get_past_job(job_id).is_none());
+            assert!(group_channel.job_store.get_stale_job(job_id).is_none());
+        }
+        assert!(group_channel.get_active_job().is_some());
     }
 }
