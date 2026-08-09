@@ -104,6 +104,8 @@ const PARITY: secp256k1::Parity = secp256k1::Parity::Even;
 /// Manages the encryption and decryption of messages between two parties, the [`Initiator`] and
 /// [`Responder`], using the Noise protocol. A symmetric cipher is used for both encrypting
 /// outgoing messages and decrypting incoming messages.
+///
+/// Call [`Self::into_split`] to divide the engine into its two directional halves.
 pub struct NoiseEngine {
     // Cipher to encrypt outgoing messages.
     encryptor: Cipher<ChaCha20Poly1305>,
@@ -127,6 +129,54 @@ impl NoiseEngine {
     /// Decrypts a message (`msg`) in place using the stored cipher.
     pub fn decrypt<T: Buffer>(&mut self, msg: &mut T) -> Result<(), AeadError> {
         self.decryptor.decrypt(msg)
+    }
+
+    /// Splits the engine into its sending and receiving halves; consuming it prevents nonce reuse.
+    pub fn into_split(self) -> (NoiseEncryptor, NoiseDecryptor) {
+        (
+            NoiseEncryptor {
+                cipher: self.encryptor,
+            },
+            NoiseDecryptor {
+                cipher: self.decryptor,
+            },
+        )
+    }
+}
+
+/// The sending half of a [`NoiseEngine`], owning only the outgoing cipher and its nonce counter.
+pub struct NoiseEncryptor {
+    cipher: Cipher<ChaCha20Poly1305>,
+}
+
+impl core::fmt::Debug for NoiseEncryptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NoiseEncryptor").finish()
+    }
+}
+
+impl NoiseEncryptor {
+    /// Encrypts a message (`msg`) in place using the stored cipher.
+    pub fn encrypt<T: Buffer>(&mut self, msg: &mut T) -> Result<(), AeadError> {
+        self.cipher.encrypt(msg)
+    }
+}
+
+/// The receiving half of a [`NoiseEngine`], owning only the incoming cipher and its nonce counter.
+pub struct NoiseDecryptor {
+    cipher: Cipher<ChaCha20Poly1305>,
+}
+
+impl core::fmt::Debug for NoiseDecryptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NoiseDecryptor").finish()
+    }
+}
+
+impl NoiseDecryptor {
+    /// Decrypts a message (`msg`) in place using the stored cipher.
+    pub fn decrypt<T: Buffer>(&mut self, msg: &mut T) -> Result<(), AeadError> {
+        self.cipher.decrypt(msg)
     }
 }
 
