@@ -24,6 +24,18 @@ use crate::extranonce_manager::ExtranoncePrefix;
 /// the oldest future job is evicted.
 pub(crate) const MAX_FUTURE_JOBS: usize = 16;
 
+/// Maximum number of past jobs a server channel retains under the current chain tip.
+///
+/// Past jobs exist for late-share validation, so the cap must stay nonzero; shares against an
+/// evicted job degrade to `InvalidJobId`, acceptable within a single tip window. Bounding the map
+/// prevents a malicious template-distribution peer from exhausting server memory by streaming
+/// non-future templates while withholding `SetNewPrevHash`.
+///
+/// 50 buys ample headroom over the reachable submit depth (a miner abandons a job once the next
+/// one arrives, so late shares realistically target the last 1-2 jobs) at a small measured
+/// memory cost — see the load-test data in PR #2290.
+pub(crate) const MAX_PAST_JOBS: usize = 50;
+
 /// Internal implementation for tracking mining job states in SV2 server channels.
 ///
 /// Maintains collections for future, active, past, and stale jobs, and tracks template-to-job ID
@@ -39,6 +51,9 @@ pub(crate) struct JobStore<T: Job> {
     active_job: Option<T>,
     // Past jobs are indexed with job_id (u32)
     past_jobs: HashMap<u32, T>,
+    // Past job IDs ordered by retirement, oldest at the front and newest at the back.
+    // Replaced IDs move to the back; overflow evicts from the front.
+    past_job_order: VecDeque<u32>,
     // Stale jobs are indexed with job_id (u32)
     stale_jobs: HashMap<u32, T>,
     // Extranonce prefixes rotated out of the channel that are still referenced by at least one job
@@ -56,6 +71,7 @@ impl<T: Job> JobStore<T> {
             future_jobs: HashMap::new(),
             active_job: None,
             past_jobs: HashMap::new(),
+            past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
             retired_extranonce_prefixes: Vec::new(),
         }
@@ -105,12 +121,33 @@ impl<T: Job> JobStore<T> {
         new_job_id
     }
 
+    /// Moves the active job (if any) into past jobs, evicting the oldest past job beyond
+    /// `MAX_PAST_JOBS`. A share against an evicted job degrades to `InvalidJobId` instead of
+    /// `Stale`, acceptable within a single tip window.
+    fn retire_active_to_past(&mut self) {
+        if let Some(active_job) = self.active_job.take() {
+            let job_id = active_job.get_job_id();
+            self.past_jobs.insert(job_id, active_job);
+
+            // a replaced job_id moves to the back of the eviction order
+            self.past_job_order.retain(|id| *id != job_id);
+            self.past_job_order.push_back(job_id);
+
+            if self.past_jobs.len() > MAX_PAST_JOBS {
+                if let Some(evicted_job_id) = self.past_job_order.pop_front() {
+                    self.past_jobs.remove(&evicted_job_id);
+                }
+            }
+        }
+    }
+
     /// Adds an active job, moving the previous active job (if any) to past jobs.
+    ///
+    /// At most `MAX_PAST_JOBS` past jobs are kept: retiring one beyond that limit evicts the
+    /// oldest.
     pub fn add_active_job(&mut self, job: T) {
         // Move currently active job to past jobs (so it can be marked as stale)
-        if let Some(active_job) = self.active_job.take() {
-            self.past_jobs.insert(active_job.get_job_id(), active_job);
-        }
+        self.retire_active_to_past();
         // Set the new active job
         self.active_job = Some(job);
     }
@@ -169,9 +206,7 @@ impl<T: Job> JobStore<T> {
             };
 
         // Move currently active job to past jobs (so it can be marked as stale)
-        if let Some(active_job) = self.active_job.take() {
-            self.past_jobs.insert(active_job.get_job_id(), active_job);
-        }
+        self.retire_active_to_past();
 
         // Activate the future job
         future_job.activate(prev_hash_header_timestamp);
@@ -186,16 +221,18 @@ impl<T: Job> JobStore<T> {
     }
 
     /// Moves the active job (if any) into past jobs.
+    ///
+    /// At most `MAX_PAST_JOBS` past jobs are kept: retiring one beyond that limit evicts the
+    /// oldest.
     pub fn deactivate_job(&mut self) {
-        if let Some(active_job) = self.active_job.take() {
-            self.past_jobs.insert(active_job.get_job_id(), active_job);
-        }
+        self.retire_active_to_past();
     }
 
     /// Marks all past jobs as stale so shares can be rejected with the proper error code.
     pub fn mark_past_jobs_as_stale(&mut self) {
         // Transfer past jobs to stale jobs collection and reset past jobs to empty
         self.stale_jobs = std::mem::take(&mut self.past_jobs);
+        self.past_job_order.clear();
         // jobs that just went stale can no longer accept shares, so any retired extranonce prefix
         // they were the last reference to is now releasable
         self.prune_retired_extranonce_prefixes();
@@ -323,6 +360,28 @@ mod tests {
                 .is_some());
             assert!(store.get_future_job(template_id as u32).is_some());
         }
+    }
+
+    #[test]
+    fn past_jobs_are_bounded() {
+        let mut store = JobStore::new();
+
+        let flood_size = 10_000u32;
+        for job_id in 0..flood_size {
+            store.add_active_job(DummyJob { job_id });
+        }
+
+        // the last job is active; of the retired ones, only the newest MAX_PAST_JOBS survive
+        for job_id in 0..flood_size - 1 - MAX_PAST_JOBS as u32 {
+            assert!(store.get_past_job(job_id).is_none());
+        }
+        for job_id in flood_size - 1 - MAX_PAST_JOBS as u32..flood_size - 1 {
+            assert!(store.get_past_job(job_id).is_some());
+        }
+        assert_eq!(
+            store.get_active_job().map(|job| job.get_job_id()),
+            Some(flood_size - 1)
+        );
     }
 
     #[test]
