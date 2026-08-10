@@ -122,6 +122,18 @@ pub fn build_sv1_set_difficulty_from_sv2_target(target: Target) -> Result<json_r
     Ok(set_target.into())
 }
 
+/// The SV1 difficulty selected by the integer power-of-two rounding policy.
+///
+/// Keeping the rounding decision in the result prevents callers from trying to infer it from the
+/// rounded value, which may itself be below a non-power-of-two rounding threshold.
+enum AdvertisedSv1Difficulty {
+    Unrounded,
+    /// A rounded difficulty equal to `2^exponent`.
+    Rounded {
+        exponent: u32,
+    },
+}
+
 /// Builds an SV1 `mining.set_difficulty` message using integer power-of-two rounding above a
 /// configurable minimum difficulty.
 ///
@@ -153,7 +165,7 @@ pub fn build_sv1_set_difficulty_from_sv2_target_with_integer_power_of_two_roundi
 fn advertised_sv1_difficulty_from_difficulty(
     difficulty: f64,
     minimum_difficulty_for_integer_power_of_two_rounding: f64,
-) -> Result<f64> {
+) -> Result<AdvertisedSv1Difficulty> {
     if !difficulty.is_finite() || difficulty <= 0.0 {
         return Err(StratumTranslationError::InvalidSv1Difficulty(difficulty));
     }
@@ -169,7 +181,7 @@ fn advertised_sv1_difficulty_from_difficulty(
     }
 
     if difficulty < minimum_difficulty_for_integer_power_of_two_rounding {
-        return Ok(difficulty);
+        return Ok(AdvertisedSv1Difficulty::Unrounded);
     }
 
     let integer_difficulty = difficulty.floor();
@@ -178,13 +190,9 @@ fn advertised_sv1_difficulty_from_difficulty(
     }
 
     let integer_difficulty = integer_difficulty as u64;
-    let power_of_two = if integer_difficulty == 0 {
-        1
-    } else {
-        1u64 << (63 - integer_difficulty.leading_zeros())
-    };
+    let exponent = 63 - integer_difficulty.leading_zeros();
 
-    Ok(power_of_two as f64)
+    Ok(AdvertisedSv1Difficulty::Rounded { exponent })
 }
 
 /// Returns the target corresponding to the SV1 difficulty that
@@ -198,20 +206,19 @@ pub fn sv1_advertised_target_from_sv2_target(
     target: Target,
     minimum_difficulty_for_integer_power_of_two_rounding: f64,
 ) -> Result<Target> {
-    let advertised = advertised_sv1_difficulty_from_difficulty(
+    match advertised_sv1_difficulty_from_difficulty(
         target.difficulty_float(),
         minimum_difficulty_for_integer_power_of_two_rounding,
-    )?;
-
-    if advertised < minimum_difficulty_for_integer_power_of_two_rounding {
-        return Ok(target);
+    )? {
+        AdvertisedSv1Difficulty::Unrounded => Ok(target),
+        AdvertisedSv1Difficulty::Rounded { exponent } => {
+            Ok(target_from_power_of_two_exponent(exponent))
+        }
     }
-
-    Ok(target_from_power_of_two_difficulty(advertised as u64))
 }
 
-fn target_from_power_of_two_difficulty(difficulty: u64) -> Target {
-    let shift = difficulty.trailing_zeros() as usize;
+fn target_from_power_of_two_exponent(exponent: u32) -> Target {
+    let shift = exponent as usize;
     let bytes = Target::MAX.to_be_bytes();
     let byte_shift = shift / 8;
     let bit_shift = shift % 8;
@@ -233,18 +240,17 @@ fn integer_power_of_two_sv1_difficulty_value_from_difficulty(
     difficulty: f64,
     minimum_difficulty_for_integer_power_of_two_rounding: f64,
 ) -> Result<Value> {
-    let advertised = advertised_sv1_difficulty_from_difficulty(
+    match advertised_sv1_difficulty_from_difficulty(
         difficulty,
         minimum_difficulty_for_integer_power_of_two_rounding,
-    )?;
-
-    if advertised < minimum_difficulty_for_integer_power_of_two_rounding {
-        let value = serde_json::Number::from_f64(advertised)
-            .ok_or(StratumTranslationError::InvalidSv1Difficulty(advertised))?;
-        return Ok(Value::Number(value));
+    )? {
+        AdvertisedSv1Difficulty::Unrounded => {
+            let value = serde_json::Number::from_f64(difficulty)
+                .ok_or(StratumTranslationError::InvalidSv1Difficulty(difficulty))?;
+            Ok(Value::Number(value))
+        }
+        AdvertisedSv1Difficulty::Rounded { exponent } => Ok(Value::from(1u64 << exponent)),
     }
-
-    Ok(Value::from(advertised as u64))
 }
 
 fn build_sv1_set_difficulty_notification(value: Value) -> json_rpc::Message {
@@ -381,6 +387,27 @@ mod tests {
     }
 
     #[test]
+    fn test_validation_target_tracks_rounding_at_non_power_of_two_threshold() {
+        let target = Target::from_compact(CompactTarget::from_consensus(0x1b009999));
+        let threshold = 100_000.0;
+        let expected = target_from_power_of_two_exponent(16);
+
+        assert!(target.difficulty_float() > threshold);
+        assert!(target.difficulty_float() < 131_072.0);
+
+        let message = build_sv1_set_difficulty_from_sv2_target_with_integer_power_of_two_rounding(
+            target, threshold,
+        )
+        .expect("valid target");
+        assert_eq!(set_difficulty_value(&message).as_u64(), Some(65_536));
+
+        let validation_target =
+            sv1_advertised_target_from_sv2_target(target, threshold).expect("valid target");
+        assert_eq!(validation_target, expected);
+        assert_ne!(validation_target, target);
+    }
+
+    #[test]
     fn test_sv1_advertised_target_keeps_target_below_threshold() {
         let target = dummy_target();
 
@@ -396,13 +423,13 @@ mod tests {
 
         assert_eq!(
             sv1_advertised_target_from_sv2_target(target, 1.0).expect("valid target"),
-            target_from_power_of_two_difficulty(65_536)
+            target_from_power_of_two_exponent(16)
         );
     }
 
     #[test]
     fn test_sv1_advertised_target_rounds_down_to_power_of_two_target() {
-        let expected = target_from_power_of_two_difficulty(65_536);
+        let expected = target_from_power_of_two_exponent(16);
         let mut bytes = expected.to_be_bytes();
         bytes[6] = 0xaa;
         bytes[7] = 0xaa;
