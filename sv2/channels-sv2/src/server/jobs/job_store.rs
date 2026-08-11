@@ -118,6 +118,11 @@ impl<T: Job> JobStore<T> {
             }
         }
 
+        // a dropped job (replaced template ID or evicted-oldest) may have been the last one
+        // holding a retired extranonce prefix alive; release such slots now rather than at the
+        // next chain transition, which a peer can withhold
+        self.prune_retired_extranonce_prefixes();
+
         new_job_id
     }
 
@@ -138,6 +143,10 @@ impl<T: Job> JobStore<T> {
         if self.past_jobs.len() > MAX_PAST_JOBS {
             if let Some(evicted_job_id) = self.past_job_order.pop_front() {
                 self.past_jobs.remove(&evicted_job_id);
+                // the evicted job may have been the last one holding a retired extranonce
+                // prefix alive; release such slots now rather than at the next chain
+                // transition, which a peer can withhold
+                self.prune_retired_extranonce_prefixes();
                 return Some(evicted_job_id);
             }
         }
@@ -394,6 +403,52 @@ mod tests {
             store.get_active_job().map(|job| job.get_job_id()),
             Some(flood_size - 1)
         );
+    }
+
+    struct PrefixedJob {
+        job_id: u32,
+        prefix: Vec<u8>,
+    }
+
+    impl Job for PrefixedJob {
+        fn get_job_id(&self) -> u32 {
+            self.job_id
+        }
+
+        fn get_extranonce_prefix(&self) -> &[u8] {
+            &self.prefix
+        }
+
+        fn activate(&mut self, _prev_hash_header_timestamp: u32) {}
+    }
+
+    #[test]
+    fn dropped_jobs_release_retired_extranonce_prefixes() {
+        let mut store = JobStore::new();
+        let old_prefix = vec![1u8];
+
+        // a future job created under the old prefix keeps the retired prefix alive
+        store.add_future_job(
+            1,
+            PrefixedJob {
+                job_id: 1,
+                prefix: old_prefix.clone(),
+            },
+        );
+        store.retire_extranonce_prefix(ExtranoncePrefix::from_wire(old_prefix).unwrap());
+        assert_eq!(store.retired_extranonce_prefixes.len(), 1);
+
+        // replacing the future job under the same template ID drops the last job referencing
+        // the retired prefix, so its slot must be released without waiting for a chain
+        // transition
+        store.add_future_job(
+            1,
+            PrefixedJob {
+                job_id: 2,
+                prefix: vec![2u8],
+            },
+        );
+        assert!(store.retired_extranonce_prefixes.is_empty());
     }
 
     #[test]

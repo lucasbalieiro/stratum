@@ -2222,6 +2222,60 @@ mod tests {
     }
 
     #[test]
+    fn test_retired_extranonce_prefix_released_after_job_eviction() {
+        // Eviction counterpart of the test above: when the last job created under a
+        // rotated-out prefix is evicted from past jobs, the prefix's slot must be released
+        // right away — a peer withholding the next chain transition must not be able to pin
+        // allocator slots.
+        let (mut allocator, mut channel, _prefix_1_bytes, job_id) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0];
+        script_bytes.push(20);
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // flood enough non-future templates to push the pre-rotation job out of past jobs
+        for template_id in 2..2 + MAX_PAST_JOBS as u64 + 2 {
+            let template = NewTemplate {
+                template_id,
+                future_template: false,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![82, 0].try_into().unwrap(),
+                coinbase_tx_input_sequence: 4294967295,
+                coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+                coinbase_tx_outputs_count: 1,
+                coinbase_tx_outputs: vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113,
+                    209, 222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153,
+                    98, 180, 139, 235, 216, 54, 151, 78, 140, 249,
+                ]
+                .try_into()
+                .unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+            channel
+                .on_new_template(template, coinbase_reward_outputs.clone())
+                .unwrap();
+        }
+        assert!(channel.get_past_job(job_id).is_none());
+
+        // the evicted job was the last reference to the rotated-out prefix, so its slot is
+        // free again
+        assert_eq!(allocator.allocated_count(), 1);
+        assert!(allocator.allocate_extended(8).is_ok());
+    }
+
+    #[test]
     fn test_on_group_channel_job_assigns_extranonce_prefix_to_future_job() {
         // Test that on_group_channel_job assigns the channel's extranonce prefix
         // to a future job that came from a group channel (with empty prefix)
