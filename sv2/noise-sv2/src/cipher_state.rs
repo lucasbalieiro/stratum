@@ -149,17 +149,14 @@ pub struct Cipher<C: AeadCipher> {
     cipher: Option<C>,
 }
 
-// Ensures that the `Cipher` type is not `Sync`, which prevents multiple threads from
-// simultaneously accessing the same instance of `Cipher`. This eliminates the need to handle
-// potential issues related to visibility of changes across threads.
+// Nonce uniqueness rests on exclusive access, not on thread affinity: `Cipher` is both `Send` and
+// `Sync`, so sharing one instance across threads is allowed and still requires the caller to
+// synchronize. What prevents two encryptions from reusing a nonce is that `encrypt`/`decrypt` take
+// `&mut self` and that the type is deliberately not `Clone`, so the key and its nonce counter can
+// never be duplicated or advanced from two places at once.
 //
-// After sending the `k` value, we immediately clear it to prevent the original thread from
-// accessing the value again, thereby enhancing security by ensuring the sensitive data is no
-// longer available in memory.
-//
-// The `Cipher` struct is neither `Sync` nor `Copy` due to its `cipher` field, which implements
-// the `AeadCipher` trait. This trait requires mutable access, making the entire struct non-`Sync`
-// and non-`Copy`, even though the key and nonce are simple types.
+// The handshake key `k` is cleared as soon as the handshake no longer needs it (see `erase_k`),
+// so it does not outlive its use even though the cipher itself lives for the whole session.
 impl<C: AeadCipher> Cipher<C> {
     // Internal use only, we need k for handshake
     pub fn from_key_and_cipher(mut k: [u8; 32], c: C) -> Self {

@@ -94,17 +94,9 @@ impl core::fmt::Debug for Initiator {
     }
 }
 
-// Ensures that the `Cipher` type is not `Sync`, which prevents multiple threads from
-// simultaneously accessing the same instance of `Cipher`. This eliminates the need to handle
-// potential issues related to visibility of changes across threads.
-//
-// After sending the `k` value, we immediately clear it to prevent the original thread from
-// accessing the value again, thereby enhancing security by ensuring the sensitive data is no
-// longer available in memory.
-//
-// The `Cipher` struct is neither `Sync` nor `Copy` due to its `cipher` field, which implements
-// the `AeadCipher` trait. This trait requires mutable access, making the entire struct non-`Sync`
-// and non-`Copy`, even though the key and nonce are simple types.
+// Every handshake encryption goes through `encrypt_with_ad`, which takes `&mut self`, and
+// `Initiator` is deliberately not `Clone`, so the handshake key and its nonce counter cannot be
+// duplicated or advanced from two places at once. See `Cipher` for the transport-mode counterpart.
 impl CipherState<ChaCha20Poly1305> for Initiator {
     fn get_k(&mut self) -> &mut Option<[u8; 32]> {
         &mut self.k
