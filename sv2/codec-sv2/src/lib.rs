@@ -336,7 +336,115 @@ impl State {
 #[cfg(test)]
 #[cfg(feature = "noise_sv2")]
 mod tests {
-    use super::*;
+    use crate::{
+        Error, HandshakeRole, NoiseEncoder, StandardEitherFrame, StandardNoiseDecoder,
+        StandardSv2Frame, State, TransportDecryptState, TransportEncryptState,
+    };
+    use binary_sv2::{Deserialize, Serialize};
+    use framing_sv2::framing::Sv2Frame;
+    use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
+    use noise_sv2::{
+        Initiator, Responder, ELLSWIFT_ENCODING_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
+    };
+
+    const AUTHORITY_PUBLIC_K: &str = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
+    const AUTHORITY_PRIVATE_K: &str = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n";
+    const CERT_VALIDITY: core::time::Duration = core::time::Duration::from_secs(3600);
+    const MSG_TYPE: u8 = 0xff;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct TestMsg {
+        nonce: u16,
+    }
+
+    // Encrypts `nonce` through `enc`, then decrypts it back through `dec` and returns the nonce
+    // carried by the decoded message.
+    fn round_trip(
+        encoder: &mut NoiseEncoder<TestMsg>,
+        enc: &mut TransportEncryptState,
+        dec: &mut TransportDecryptState,
+        nonce: u16,
+    ) -> u16 {
+        let frame = StandardEitherFrame::<TestMsg>::Sv2(
+            Sv2Frame::from_message(TestMsg { nonce }, MSG_TYPE, 0, false).unwrap(),
+        );
+        let encrypted = encoder.encode_transport(frame, enc).unwrap();
+
+        let mut decoder = StandardNoiseDecoder::<TestMsg>::new();
+        let mut offset = 0;
+        loop {
+            let writable = decoder.writable();
+            let len = writable.len();
+            writable.copy_from_slice(&encrypted[offset..offset + len]);
+            offset += len;
+
+            match decoder.next_transport_frame(dec) {
+                Ok(frame) => {
+                    let mut frame: StandardSv2Frame<TestMsg> = frame.try_into().unwrap();
+                    assert_eq!(frame.get_header().unwrap().msg_type(), MSG_TYPE);
+                    let msg: TestMsg = binary_sv2::from_bytes(frame.payload()).unwrap();
+                    return msg.nonce;
+                }
+                Err(Error::MissingBytes(_)) => {}
+                Err(e) => panic!("failed to decode a transport frame: {e:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn split_transport_round_trips_in_both_directions() {
+        let authority_public_k: Secp256k1PublicKey =
+            AUTHORITY_PUBLIC_K.to_string().try_into().unwrap();
+        let authority_private_k: Secp256k1SecretKey =
+            AUTHORITY_PRIVATE_K.to_string().try_into().unwrap();
+
+        let mut initiator_state = State::initialized(HandshakeRole::Initiator(
+            Initiator::from_raw_k(authority_public_k.into_bytes()).unwrap(),
+        ));
+        let mut responder_state = State::initialized(HandshakeRole::Responder(
+            Responder::from_authority_kp(
+                &authority_public_k.into_bytes(),
+                &authority_private_k.into_bytes(),
+                CERT_VALIDITY,
+            )
+            .unwrap(),
+        ));
+
+        let first_message: [u8; ELLSWIFT_ENCODING_SIZE] = initiator_state
+            .step_0()
+            .unwrap()
+            .get_payload_when_handshaking()
+            .try_into()
+            .unwrap();
+        let (second_message, responder_state) = responder_state.step_1(first_message).unwrap();
+        let second_message: [u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] = second_message
+            .get_payload_when_handshaking()
+            .try_into()
+            .unwrap();
+        let initiator_state = initiator_state.step_2(second_message).unwrap();
+
+        let (mut initiator_enc, mut initiator_dec) = initiator_state.split_transport().unwrap();
+        let (mut responder_enc, mut responder_dec) = responder_state.split_transport().unwrap();
+        let mut encoder = NoiseEncoder::<TestMsg>::new();
+
+        // Each half keeps its own cipher and nonce counter, so the two sides only stay in step
+        // across repeated frames if every frame is sealed and opened by the matching direction.
+        for nonce in 0..8u16 {
+            assert_eq!(
+                round_trip(&mut encoder, &mut initiator_enc, &mut responder_dec, nonce),
+                nonce
+            );
+            assert_eq!(
+                round_trip(
+                    &mut encoder,
+                    &mut responder_enc,
+                    &mut initiator_dec,
+                    nonce + 100
+                ),
+                nonce + 100
+            );
+        }
+    }
 
     #[test]
     fn handshake_step_fails_if_state_is_not_initialized() {

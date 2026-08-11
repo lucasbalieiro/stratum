@@ -58,8 +58,8 @@ use secp256k1::{
 /// Manages the initiator's role in the Noise NX handshake, handling key exchange, encryption, and
 /// handshake state. It securely generates and manages cryptographic keys, performs Diffie-Hellman
 /// exchanges, and maintains the handshake hash, chaining key, and nonce for message encryption.
-/// After the handshake, it facilitates secure communication using either [`ChaCha20Poly1305`] or
-/// `AES-GCM` ciphers. Sensitive data is securely erased when no longer needed.
+/// After the handshake, it facilitates secure communication using [`ChaCha20Poly1305`]. Sensitive
+/// data is securely erased when no longer needed.
 pub struct Initiator {
     // Cipher used for encrypting and decrypting messages during the handshake.
     //

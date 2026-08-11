@@ -109,8 +109,9 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
         Self::generate_key_with_rng(&mut rand::thread_rng())
     }
 
-    // The `CryptoRng` bound rejects generators that are not suitable for cryptographic use, such
-    // as deterministic or weak ones.
+    // The `CryptoRng` bound requires generators that declare themselves suitable for cryptographic
+    // use. Seed quality and correct `CryptoRng` implementations remain the caller's
+    // responsibility.
     #[inline]
     fn generate_key_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(rng: &mut R) -> Keypair {
         let secp = Secp256k1::new();
