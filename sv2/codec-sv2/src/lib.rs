@@ -352,11 +352,12 @@ mod tests {
         Error, HandshakeRole, NoiseEncoder, StandardEitherFrame, StandardNoiseDecoder,
         StandardSv2Frame, State, TransportDecryptState, TransportEncryptState,
     };
-    use binary_sv2::{Deserialize, Serialize};
-    use framing_sv2::framing::Sv2Frame;
+    use binary_sv2::{Deserialize, Serialize, B064K};
+    use framing_sv2::{framing::Sv2Frame, SV2_FRAME_CHUNK_SIZE};
     use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
     use noise_sv2::{
-        Initiator, Responder, ELLSWIFT_ENCODING_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
+        Initiator, Responder, AEAD_MAC_LEN, ELLSWIFT_ENCODING_SIZE,
+        INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
     };
 
     const AUTHORITY_PUBLIC_K: &str = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
@@ -369,10 +370,20 @@ mod tests {
         nonce: u16,
     }
 
-    // Encrypts `nonce` through `enc`, then decrypts it back through `dec` and returns the nonce
-    // carried by the decoded message.
+    // A message whose payload can be made large enough to span more than one chunk.
+    #[derive(Debug, Serialize, Deserialize)]
+    struct ChunkedMsg<'decoder> {
+        data: B064K<'decoder>,
+    }
+
+    // Encrypts `nonce` through `enc`, then decrypts it back through `dec` and `decoder`, and
+    // returns the nonce carried by the decoded message.
+    //
+    // `decoder` is passed in rather than created here so that callers can reuse one decoder per
+    // direction across frames, the way a connection does.
     fn round_trip(
         encoder: &mut NoiseEncoder<TestMsg>,
+        decoder: &mut StandardNoiseDecoder<TestMsg>,
         enc: &mut TransportEncryptState,
         dec: &mut TransportDecryptState,
         nonce: u16,
@@ -382,7 +393,6 @@ mod tests {
         );
         let encrypted = encoder.encode_transport(frame, enc).unwrap();
 
-        let mut decoder = StandardNoiseDecoder::<TestMsg>::new();
         let mut offset = 0;
         loop {
             let writable = decoder.writable();
@@ -403,8 +413,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn split_transport_round_trips_in_both_directions() {
+    // Runs a full handshake and returns both sides split into their halves, as
+    // `(initiator encrypt, initiator decrypt, responder encrypt, responder decrypt)`.
+    fn transport_halves() -> (
+        TransportEncryptState,
+        TransportDecryptState,
+        TransportEncryptState,
+        TransportDecryptState,
+    ) {
         let authority_public_k: Secp256k1PublicKey =
             AUTHORITY_PUBLIC_K.to_string().try_into().unwrap();
         let authority_private_k: Secp256k1SecretKey =
@@ -438,26 +454,86 @@ mod tests {
         assert!(initiator_state.is_transport());
         assert!(responder_state.is_transport());
 
-        let (mut initiator_enc, mut initiator_dec) = initiator_state.split_transport().unwrap();
-        let (mut responder_enc, mut responder_dec) = responder_state.split_transport().unwrap();
+        let (initiator_enc, initiator_dec) = initiator_state.split_transport().unwrap();
+        let (responder_enc, responder_dec) = responder_state.split_transport().unwrap();
+        (initiator_enc, initiator_dec, responder_enc, responder_dec)
+    }
+
+    #[test]
+    fn split_transport_round_trips_in_both_directions() {
+        let (mut initiator_enc, mut initiator_dec, mut responder_enc, mut responder_dec) =
+            transport_halves();
         let mut encoder = NoiseEncoder::<TestMsg>::new();
+
+        // One decoder per direction, kept for every frame, as a connection would: leftover buffer
+        // state carries from one frame to the next here.
+        let mut to_responder = StandardNoiseDecoder::<TestMsg>::new();
+        let mut to_initiator = StandardNoiseDecoder::<TestMsg>::new();
 
         // Each half keeps its own cipher and nonce counter, so the two sides only stay in step
         // across repeated frames if every frame is sealed and opened by the matching direction.
         for nonce in 0..8u16 {
             assert_eq!(
-                round_trip(&mut encoder, &mut initiator_enc, &mut responder_dec, nonce),
+                round_trip(
+                    &mut encoder,
+                    &mut to_responder,
+                    &mut initiator_enc,
+                    &mut responder_dec,
+                    nonce
+                ),
                 nonce
             );
             assert_eq!(
                 round_trip(
                     &mut encoder,
+                    &mut to_initiator,
                     &mut responder_enc,
                     &mut initiator_dec,
                     nonce + 100
                 ),
                 nonce + 100
             );
+        }
+    }
+
+    #[test]
+    fn split_transport_round_trips_a_frame_that_spans_several_chunks() {
+        let (mut initiator_enc, _, _, mut responder_dec) = transport_halves();
+
+        // The encoder seals, and the decoder opens, at most `SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN`
+        // bytes of frame at a time, so a payload past that boundary is what makes both of them
+        // loop. Anything smaller only ever exercises the single-chunk path.
+        let mut data = vec![0xab; u16::MAX as usize];
+        assert!(data.len() > SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN);
+        let msg = ChunkedMsg {
+            data: (&mut data[..]).try_into().unwrap(),
+        };
+
+        let frame = StandardEitherFrame::<ChunkedMsg>::Sv2(
+            Sv2Frame::from_message(msg, MSG_TYPE, 0, false).unwrap(),
+        );
+        let mut encoder = NoiseEncoder::<ChunkedMsg>::new();
+        let encrypted = encoder.encode_transport(frame, &mut initiator_enc).unwrap();
+
+        let mut decoder = StandardNoiseDecoder::<ChunkedMsg>::new();
+        let mut offset = 0;
+        loop {
+            let writable = decoder.writable();
+            let len = writable.len();
+            writable.copy_from_slice(&encrypted[offset..offset + len]);
+            offset += len;
+
+            match decoder.next_transport_frame(&mut responder_dec) {
+                Ok(frame) => {
+                    let mut frame: StandardSv2Frame<ChunkedMsg> = frame.try_into().unwrap();
+                    assert_eq!(frame.get_header().unwrap().msg_type(), MSG_TYPE);
+                    let decoded: ChunkedMsg = binary_sv2::from_bytes(frame.payload()).unwrap();
+                    assert_eq!(decoded.data.as_bytes(), &vec![0xab; u16::MAX as usize][..]);
+                    break;
+                }
+                Err(Error::MissingBytes(_)) => {}
+                Err(e) => panic!("failed to decode a chunked transport frame: {e:?}"),
+            }
         }
     }
 
