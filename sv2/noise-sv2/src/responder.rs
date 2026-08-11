@@ -35,6 +35,7 @@
 // instance goes out of scope, preventing potential misuse or leakage of cryptographic material.
 
 use core::{ptr, time::Duration};
+use zeroize::Zeroize;
 
 use crate::{
     cipher_state::{Cipher, CipherState},
@@ -49,7 +50,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit};
 use secp256k1::{ellswift::ElligatorSwift, Keypair, Secp256k1, SecretKey};
 
 const VERSION: u16 = 0;
@@ -310,7 +311,7 @@ impl Responder {
         let e_private_key = keypair.secret_key();
         let elligatorswift_theirs_ephemeral =
             ElligatorSwift::from_array(elligatorswift_theirs_ephemeral_serialized);
-        let ecdh_ephemeral = ElligatorSwift::shared_secret(
+        let mut ecdh_ephemeral = ElligatorSwift::shared_secret(
             elligatorswift_theirs_ephemeral,
             elligatorswitf_ours_ephemeral,
             e_private_key,
@@ -319,6 +320,7 @@ impl Responder {
         )
         .to_secret_bytes();
         Self::mix_key(self, &ecdh_ephemeral);
+        ecdh_ephemeral.zeroize();
 
         // 5. appends `EncryptAndHash(s.public_key)` (64 bytes encrypted elligatorswift  public key,
         //    16 bytes MAC)
@@ -335,7 +337,7 @@ impl Responder {
 
         // 6. calls `MixKey(ECDH(s.private_key, re.public_key))`
         let s_private_key = self.s.secret_key();
-        let ecdh_static = ElligatorSwift::shared_secret(
+        let mut ecdh_static = ElligatorSwift::shared_secret(
             elligatorswift_theirs_ephemeral,
             elligatorswift_ours_static,
             s_private_key,
@@ -344,6 +346,7 @@ impl Responder {
         )
         .to_secret_bytes();
         Self::mix_key(self, &ecdh_static[..]);
+        ecdh_static.zeroize();
 
         // 7. appends `EncryptAndHash(SIGNATURE_NOISE_MESSAGE)` to the buffer
         let valid_from = now;
@@ -360,9 +363,9 @@ impl Responder {
         // 9. return pair of CipherState objects, the first for encrypting transport messages from
         //    initiator to responder, and the second for messages in the other direction:
         let ck = Self::get_ck(self);
-        let (temp_k1, temp_k2) = Self::hkdf_2(ck, &[]);
-        let c1 = ChaCha20Poly1305::new(&temp_k1.into());
-        let c2 = ChaCha20Poly1305::new(&temp_k2.into());
+        let (mut temp_k1, mut temp_k2) = Self::hkdf_2(ck, &[]);
+        let c1 = ChaCha20Poly1305::new(Key::from_slice(&temp_k1[..]));
+        let c2 = ChaCha20Poly1305::new(Key::from_slice(&temp_k2[..]));
         let c1: Cipher<ChaCha20Poly1305> = Cipher::from_key_and_cipher(temp_k1, c1);
         let c2: Cipher<ChaCha20Poly1305> = Cipher::from_key_and_cipher(temp_k2, c2);
         let to_send = out;
@@ -370,6 +373,10 @@ impl Responder {
         let mut decryptor = c1;
         encryptor.erase_k();
         decryptor.erase_k();
+        // The ciphers keep the only copies of the session keys from here on; `erase_k` above wiped
+        // the copies the `Cipher`s carried, and these are the ones the handshake used.
+        temp_k1.zeroize();
+        temp_k2.zeroize();
         let engine = crate::NoiseEngine {
             encryptor,
             decryptor,

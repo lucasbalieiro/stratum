@@ -39,6 +39,7 @@ use alloc::{
     string::{String, ToString},
 };
 use core::{convert::TryInto, ptr};
+use zeroize::Zeroize;
 
 use crate::{
     cipher_state::{Cipher, CipherState},
@@ -49,7 +50,7 @@ use crate::{
     ENCRYPTED_SIGNATURE_NOISE_MESSAGE_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
     SIGNATURE_NOISE_MESSAGE_SIZE,
 };
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit};
 use secp256k1::{
     ellswift::{ElligatorSwift, ElligatorSwiftParty},
     Keypair, PublicKey, XOnlyPublicKey,
@@ -320,7 +321,7 @@ impl Initiator {
         let elligatorswift_ours_ephemeral = ElligatorSwift::from_pubkey(self.e.public_key());
         let elligatorswift_theirs_ephemeral =
             ElligatorSwift::from_array(elliswift_theirs_ephemeral_serialized);
-        let ecdh_ephemeral: [u8; 32] = ElligatorSwift::shared_secret(
+        let mut ecdh_ephemeral: [u8; 32] = ElligatorSwift::shared_secret(
             elligatorswift_ours_ephemeral,
             elligatorswift_theirs_ephemeral,
             e_private_key,
@@ -329,6 +330,7 @@ impl Initiator {
         )
         .to_secret_bytes();
         self.mix_key(&ecdh_ephemeral);
+        ecdh_ephemeral.zeroize();
 
         // 5. decrypts next 80 bytes with `DecryptAndHash()` and stores the results as
         // `rs.public_key` which is **server's static public key** (note that 64 bytes is the
@@ -344,7 +346,7 @@ impl Initiator {
             .expect("slice with incorrect length");
         let elligatorswift_theirs_static =
             ElligatorSwift::from_array(elligatorswift_theirs_static_serialized);
-        let ecdh_static: [u8; 32] = ElligatorSwift::shared_secret(
+        let mut ecdh_static: [u8; 32] = ElligatorSwift::shared_secret(
             elligatorswift_ours_ephemeral,
             elligatorswift_theirs_static,
             e_private_key,
@@ -353,6 +355,7 @@ impl Initiator {
         )
         .to_secret_bytes();
         self.mix_key(&ecdh_static);
+        ecdh_static.zeroize();
 
         // Decrypt and verify the SignatureNoiseMessage
         let mut to_decrypt = message[ELLSWIFT_ENCODING_SIZE + ENCRYPTED_ELLSWIFT_ENCODING_SIZE
@@ -371,15 +374,19 @@ impl Initiator {
             .serialize();
         let rs_pk_xonly = XOnlyPublicKey::from_slice(&rs_pub_key).unwrap();
         if signature_message.verify_with_now(&rs_pk_xonly, &self.responder_authority_pk, now) {
-            let (temp_k1, temp_k2) = Self::hkdf_2(self.get_ck(), &[]);
-            let c1 = ChaCha20Poly1305::new(&temp_k1.into());
-            let c2 = ChaCha20Poly1305::new(&temp_k2.into());
+            let (mut temp_k1, mut temp_k2) = Self::hkdf_2(self.get_ck(), &[]);
+            let c1 = ChaCha20Poly1305::new(Key::from_slice(&temp_k1[..]));
+            let c2 = ChaCha20Poly1305::new(Key::from_slice(&temp_k2[..]));
             let c1: Cipher<ChaCha20Poly1305> = Cipher::from_key_and_cipher(temp_k1, c1);
             let c2: Cipher<ChaCha20Poly1305> = Cipher::from_key_and_cipher(temp_k2, c2);
             let mut encryptor = c1;
             let mut decryptor = c2;
             encryptor.erase_k();
             decryptor.erase_k();
+            // The ciphers keep the only copies of the session keys from here on; `erase_k` above
+            // wiped the copies the `Cipher`s carried, and these are the ones the handshake used.
+            temp_k1.zeroize();
+            temp_k2.zeroize();
             let engine = crate::NoiseEngine {
                 encryptor,
                 decryptor,

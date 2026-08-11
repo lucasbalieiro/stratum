@@ -21,7 +21,7 @@
 
 use chacha20poly1305::{
     aead::{Buffer, Error},
-    AeadInPlace, ChaCha20Poly1305, ChaChaPoly1305, KeyInit,
+    AeadInPlace, ChaCha20Poly1305, ChaChaPoly1305, Key, KeyInit,
 };
 
 // Defines the interface for AEAD ciphers.
@@ -67,8 +67,11 @@ pub trait AeadCipher {
 }
 
 impl AeadCipher for ChaCha20Poly1305 {
-    fn from_key(k: [u8; 32]) -> Self {
-        ChaChaPoly1305::new(&k.into())
+    fn from_key(mut k: [u8; 32]) -> Self {
+        use zeroize::Zeroize;
+        let cipher = ChaChaPoly1305::new(Key::from_slice(&k[..]));
+        k.zeroize();
+        cipher
     }
 
     fn encrypt<T: Buffer>(

@@ -28,6 +28,7 @@
 // nonce tracking throughout the communication session.
 
 use core::ptr;
+use zeroize::Zeroize;
 
 use crate::aed_cipher::AeadCipher;
 use chacha20poly1305::aead::{Buffer, Error};
@@ -161,12 +162,14 @@ pub struct Cipher<C: AeadCipher> {
 // and non-`Copy`, even though the key and nonce are simple types.
 impl<C: AeadCipher> Cipher<C> {
     // Internal use only, we need k for handshake
-    pub fn from_key_and_cipher(k: [u8; 32], c: C) -> Self {
-        Self {
+    pub fn from_key_and_cipher(mut k: [u8; 32], c: C) -> Self {
+        let state = Self {
             k: Some(k),
             n: 0,
             cipher: Some(c),
-        }
+        };
+        k.zeroize();
+        state
     }
 
     // Encrypts data in place using an empty additional associated data buffer.
