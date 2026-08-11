@@ -124,32 +124,37 @@ impl<T: Job> JobStore<T> {
     /// Moves the active job (if any) into past jobs, evicting the oldest past job beyond
     /// `MAX_PAST_JOBS`. A share against an evicted job degrades to `InvalidJobId` instead of
     /// `Stale`, acceptable within a single tip window.
-    fn retire_active_to_past(&mut self) {
-        if let Some(active_job) = self.active_job.take() {
-            let job_id = active_job.get_job_id();
-            self.past_jobs.insert(job_id, active_job);
+    ///
+    /// Returns the evicted job's ID, if any, so callers can drop metadata they key by job ID.
+    fn retire_active_to_past(&mut self) -> Option<u32> {
+        let active_job = self.active_job.take()?;
+        let job_id = active_job.get_job_id();
+        self.past_jobs.insert(job_id, active_job);
 
-            // a replaced job_id moves to the back of the eviction order
-            self.past_job_order.retain(|id| *id != job_id);
-            self.past_job_order.push_back(job_id);
+        // a replaced job_id moves to the back of the eviction order
+        self.past_job_order.retain(|id| *id != job_id);
+        self.past_job_order.push_back(job_id);
 
-            if self.past_jobs.len() > MAX_PAST_JOBS {
-                if let Some(evicted_job_id) = self.past_job_order.pop_front() {
-                    self.past_jobs.remove(&evicted_job_id);
-                }
+        if self.past_jobs.len() > MAX_PAST_JOBS {
+            if let Some(evicted_job_id) = self.past_job_order.pop_front() {
+                self.past_jobs.remove(&evicted_job_id);
+                return Some(evicted_job_id);
             }
         }
+        None
     }
 
     /// Adds an active job, moving the previous active job (if any) to past jobs.
     ///
     /// At most `MAX_PAST_JOBS` past jobs are kept: retiring one beyond that limit evicts the
-    /// oldest.
-    pub fn add_active_job(&mut self, job: T) {
+    /// oldest, and its ID is returned so callers can drop metadata they key by job ID (e.g. the
+    /// per-job target mapping of standard and extended channels).
+    pub fn add_active_job(&mut self, job: T) -> Option<u32> {
         // Move currently active job to past jobs (so it can be marked as stale)
-        self.retire_active_to_past();
+        let evicted_job_id = self.retire_active_to_past();
         // Set the new active job
         self.active_job = Some(job);
+        evicted_job_id
     }
 
     /// Replaces the active job, dropping the previous active job (if any).
@@ -223,9 +228,9 @@ impl<T: Job> JobStore<T> {
     /// Moves the active job (if any) into past jobs.
     ///
     /// At most `MAX_PAST_JOBS` past jobs are kept: retiring one beyond that limit evicts the
-    /// oldest.
-    pub fn deactivate_job(&mut self) {
-        self.retire_active_to_past();
+    /// oldest, and its ID is returned so callers can drop metadata they key by job ID.
+    pub fn deactivate_job(&mut self) -> Option<u32> {
+        self.retire_active_to_past()
     }
 
     /// Marks all past jobs as stale so shares can be rejected with the proper error code.
@@ -368,7 +373,14 @@ mod tests {
 
         let flood_size = 10_000u32;
         for job_id in 0..flood_size {
-            store.add_active_job(DummyJob { job_id });
+            let evicted_job_id = store.add_active_job(DummyJob { job_id });
+            // the first eviction happens once MAX_PAST_JOBS past jobs already exist; from
+            // then on each retirement evicts the oldest and reports its ID
+            if job_id as usize > MAX_PAST_JOBS {
+                assert_eq!(evicted_job_id, Some(job_id - MAX_PAST_JOBS as u32 - 1));
+            } else {
+                assert_eq!(evicted_job_id, None);
+            }
         }
 
         // the last job is active; of the retired ones, only the newest MAX_PAST_JOBS survive

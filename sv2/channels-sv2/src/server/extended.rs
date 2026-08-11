@@ -535,8 +535,11 @@ impl ExtendedChannel {
                         self.job_id_to_target
                             .insert(new_job.get_job_id(), self.target);
 
-                        // add the new active job to the job store
-                        self.job_store.add_active_job(new_job);
+                        // add the new active job to the job store, dropping the evicted past
+                        // job's target mapping (its shares degrade to InvalidJobId)
+                        if let Some(evicted_job_id) = self.job_store.add_active_job(new_job) {
+                            self.job_id_to_target.remove(&evicted_job_id);
+                        }
                     }
                 }
             }
@@ -573,7 +576,11 @@ impl ExtendedChannel {
             false => {
                 self.job_id_to_target
                     .insert(extended_job.get_job_id(), self.target);
-                self.job_store.add_active_job(extended_job);
+                // dropping the evicted past job's target mapping (its shares degrade to
+                // InvalidJobId)
+                if let Some(evicted_job_id) = self.job_store.add_active_job(extended_job) {
+                    self.job_id_to_target.remove(&evicted_job_id);
+                }
             }
         }
 
@@ -679,7 +686,10 @@ impl ExtendedChannel {
 
         let job_id = new_job.get_job_id();
 
-        self.job_store.add_active_job(new_job);
+        // dropping the evicted past job's target mapping (its shares degrade to InvalidJobId)
+        if let Some(evicted_job_id) = self.job_store.add_active_job(new_job) {
+            self.job_id_to_target.remove(&evicted_job_id);
+        }
 
         if is_new_chain_tip {
             self.job_store.mark_past_jobs_as_stale();
@@ -3234,5 +3244,9 @@ mod tests {
             .count();
         assert_eq!(retained, MAX_PAST_JOBS);
         assert!(channel.get_active_job().is_some());
+
+        // target metadata must not outlive the jobs it belongs to: one entry for the active
+        // job plus one per retained past job
+        assert_eq!(channel.job_id_to_target.len(), MAX_PAST_JOBS + 1);
     }
 }

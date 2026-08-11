@@ -509,8 +509,11 @@ impl StandardChannel {
                         self.job_id_to_target
                             .insert(new_job.get_job_id(), self.target);
 
-                        // add the new active job to the job store
-                        self.job_store.add_active_job(new_job);
+                        // add the new active job to the job store, dropping the evicted past
+                        // job's target mapping (its shares degrade to InvalidJobId)
+                        if let Some(evicted_job_id) = self.job_store.add_active_job(new_job) {
+                            self.job_id_to_target.remove(&evicted_job_id);
+                        }
                     }
                 }
             }
@@ -542,8 +545,11 @@ impl StandardChannel {
                 self.job_id_to_target
                     .insert(standard_job.get_job_id(), self.target);
 
-                // add the new active job to the job store
-                self.job_store.add_active_job(standard_job);
+                // add the new active job to the job store, dropping the evicted past job's
+                // target mapping (its shares degrade to InvalidJobId)
+                if let Some(evicted_job_id) = self.job_store.add_active_job(standard_job) {
+                    self.job_id_to_target.remove(&evicted_job_id);
+                }
             }
         }
 
@@ -2482,5 +2488,9 @@ mod tests {
             .count();
         assert_eq!(retained, MAX_PAST_JOBS);
         assert!(standard_channel.get_active_job().is_some());
+
+        // target metadata must not outlive the jobs it belongs to: one entry for the active
+        // job plus one per retained past job
+        assert_eq!(standard_channel.job_id_to_target.len(), MAX_PAST_JOBS + 1);
     }
 }
