@@ -140,8 +140,10 @@ cargo update -p stratum-core
 echo "✅ Updated Cargo.toml to use local dependencies"
 echo "🏃 Running integration tests..."
 
-# Run the integration tests
-RUST_BACKTRACE=1 RUST_LOG=debug cargo nextest run --nocapture --verbose
+# Failure triage: re-run a single test with captured logs shown live:
+#   RUST_LOG=debug cargo nextest run \
+#     -E 'test(<name>)' --no-capture
+RUST_BACKTRACE=1 RUST_LOG=debug cargo nextest run
 
 cd "$REPO_ROOT"
 echo "✅ Integration tests completed!"
