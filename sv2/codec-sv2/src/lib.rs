@@ -316,7 +316,19 @@ impl State {
         Self::Transport(tm)
     }
 
+    /// Returns whether this state is in transport mode, and so can be split into its two halves.
+    ///
+    /// [`Self::split_transport`] consumes the state on its error path as well, so this is the way
+    /// to check before committing to the call.
+    pub fn is_transport(&self) -> bool {
+        matches!(self, Self::Transport(_))
+    }
+
     /// Splits a transport-mode state into its encrypting and decrypting halves, consuming it.
+    ///
+    /// The state is consumed whatever the outcome: a state that is not in transport mode is dropped
+    /// rather than handed back, so callers that cannot guarantee the mode should check
+    /// [`Self::is_transport`] first.
     pub fn split_transport(
         self,
     ) -> core::result::Result<(TransportEncryptState, TransportDecryptState), Error> {
@@ -423,6 +435,9 @@ mod tests {
             .unwrap();
         let initiator_state = initiator_state.step_2(second_message).unwrap();
 
+        assert!(initiator_state.is_transport());
+        assert!(responder_state.is_transport());
+
         let (mut initiator_enc, mut initiator_dec) = initiator_state.split_transport().unwrap();
         let (mut responder_enc, mut responder_dec) = responder_state.split_transport().unwrap();
         let mut encoder = NoiseEncoder::<TestMsg>::new();
@@ -444,6 +459,16 @@ mod tests {
                 nonce + 100
             );
         }
+    }
+
+    #[test]
+    fn is_transport_reports_whether_the_state_can_be_split() {
+        let state = State::NotInitialized(32);
+        assert!(!state.is_transport());
+        assert_eq!(
+            state.split_transport().unwrap_err(),
+            Error::UnexpectedNoiseState
+        );
     }
 
     #[test]
