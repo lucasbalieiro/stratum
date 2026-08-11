@@ -376,11 +376,6 @@ mod tests {
         data: B064K<'decoder>,
     }
 
-    // Encrypts `nonce` through `enc`, then decrypts it back through `dec` and `decoder`, and
-    // returns the nonce carried by the decoded message.
-    //
-    // `decoder` is passed in rather than created here so that callers can reuse one decoder per
-    // direction across frames, the way a connection does.
     fn round_trip(
         encoder: &mut NoiseEncoder<TestMsg>,
         decoder: &mut StandardNoiseDecoder<TestMsg>,
@@ -413,8 +408,6 @@ mod tests {
         }
     }
 
-    // Runs a full handshake and returns both sides split into their halves, as
-    // `(initiator encrypt, initiator decrypt, responder encrypt, responder decrypt)`.
     fn transport_halves() -> (
         TransportEncryptState,
         TransportDecryptState,

@@ -278,15 +278,12 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
         let result = self.try_decode_noise_frame(decrypt);
 
         match &result {
-            // `MissingBytes` is the normal way out of the header round: the header has been
-            // decrypted into `sv2_buffer` and the payload is still on its way, so the buffer has to
-            // be left exactly as it is.
+            // `MissingBytes` is the normal way out of the header round, so the buffer has to be
+            // left exactly as it is.
             Err(Error::MissingBytes(_)) | Ok(_) => {}
             Err(_) => {
-                // Any other failure leaves the decrypt offset at the chunk that failed and the
-                // bytes decrypted so far in the buffer. A decoder is kept for the life of a
-                // connection, so the next frame would be decrypted at that stale offset and then
-                // read as a frame starting in the middle of this one's plaintext.
+                // Not a no-op: the decrypt offset and the plaintext decrypted so far persist across
+                // calls, so without this the next frame is decrypted at the failing chunk's offset.
                 self.sv2_buffer.danger_set_start(0);
                 self.sv2_buffer.get_data_owned();
             }
@@ -842,9 +839,6 @@ mod prop_tests {
         }
     }
 
-    /// Verifies that a failed decryption does not leave the decoder decrypting the next frame at
-    /// the offset the failing chunk was using, nor with the plaintext of the failed frame still in
-    /// the buffer.
     #[cfg(feature = "noise_sv2")]
     #[test]
     fn noise_decoder_recovers_from_a_failed_decryption() {
