@@ -540,7 +540,7 @@ mod prop_tests {
         let mut decoded = loop {
             let writable = decoder.writable();
             let len = writable.len();
-            writable.copy_from_slice(&encrypted.as_ref()[offset..offset + len]);
+            writable.copy_from_slice(&encrypted[offset..offset + len]);
             offset += len;
 
             match decoder.next_frame(&mut receiver_state) {
