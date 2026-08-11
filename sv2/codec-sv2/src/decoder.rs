@@ -273,6 +273,31 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
     #[inline]
     fn decode_noise_frame(
         &mut self,
+        decrypt: impl FnMut(&mut B) -> Result<()>,
+    ) -> Result<Frame<T, B::Slice>> {
+        let result = self.try_decode_noise_frame(decrypt);
+
+        match &result {
+            // `MissingBytes` is the normal way out of the header round: the header has been
+            // decrypted into `sv2_buffer` and the payload is still on its way, so the buffer has to
+            // be left exactly as it is.
+            Err(Error::MissingBytes(_)) | Ok(_) => {}
+            Err(_) => {
+                // Any other failure leaves the decrypt offset at the chunk that failed and the
+                // bytes decrypted so far in the buffer. A decoder is kept for the life of a
+                // connection, so the next frame would be decrypted at that stale offset and then
+                // read as a frame starting in the middle of this one's plaintext.
+                self.sv2_buffer.danger_set_start(0);
+                self.sv2_buffer.get_data_owned();
+            }
+        }
+
+        result
+    }
+
+    #[inline]
+    fn try_decode_noise_frame(
+        &mut self,
         mut decrypt: impl FnMut(&mut B) -> Result<()>,
     ) -> Result<Frame<T, B::Slice>> {
         match (
@@ -814,6 +839,50 @@ mod prop_tests {
                 }
                 Err(_) => return TestResult::failed(),
             }
+        }
+    }
+
+    /// Verifies that a failed decryption does not leave the decoder decrypting the next frame at
+    /// the offset the failing chunk was using, nor with the plaintext of the failed frame still in
+    /// the buffer.
+    #[cfg(feature = "noise_sv2")]
+    #[test]
+    fn noise_decoder_recovers_from_a_failed_decryption() {
+        let (mut sender_state, mut receiver_state) = make_transport_state_pair();
+        let frame = Frame::Sv2(
+            Sv2Frame::<TestMessage, Slice>::from_message(TestMessage { value: 7 }, 0, 0, false)
+                .unwrap(),
+        );
+        let mut encoder = NoiseEncoder::<TestMessage>::new();
+        let encrypted = encoder.encode(frame, &mut sender_state).unwrap();
+        let encrypted: &[u8] = encrypted.as_ref();
+
+        let mut decoder = StandardNoiseDecoder::<TestMessage>::new();
+
+        // Fail on the encrypted header. The closure never touches `receiver_state`, so its nonce
+        // stays where it was and the same bytes can be replayed below.
+        let hint = decoder
+            .next_transport(|_| Err(crate::Error::UnexpectedNoiseState))
+            .unwrap_err();
+        assert!(matches!(hint, crate::Error::MissingBytes(_)));
+        let writable = decoder.writable();
+        let len = writable.len();
+        writable.copy_from_slice(&encrypted[..len]);
+        let failed = decoder
+            .next_transport(|_| Err(crate::Error::UnexpectedNoiseState))
+            .unwrap_err();
+        assert!(matches!(failed, crate::Error::UnexpectedNoiseState));
+        assert_eq!(IsBuffer::len(&decoder.sv2_buffer), 0);
+        assert!(decoder.sv2_buffer.as_ref().is_empty());
+
+        // The same decoder must now decode the frame from the start.
+        let decoded = decode_noise_frame(&mut decoder, &mut receiver_state, encrypted);
+        match decoded {
+            Some(mut f) => assert_eq!(
+                binary_sv2::from_bytes::<TestMessage>(f.payload()).unwrap(),
+                TestMessage { value: 7 }
+            ),
+            None => panic!("failed to decode the frame after a failed decryption"),
         }
     }
 
