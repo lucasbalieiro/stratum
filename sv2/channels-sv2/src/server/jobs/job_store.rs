@@ -96,12 +96,15 @@ impl<T: Job> JobStore<T> {
     ///
     /// Returns the new job's ID.
     pub fn add_future_job(&mut self, template_id: u64, new_job: T) -> u32 {
+        let mut dropped_job = false;
+
         let new_job_id = new_job.get_job_id();
         if let Some(old_job_id) = self
             .future_template_to_job_id
             .insert(template_id, new_job_id)
         {
             self.future_jobs.remove(&old_job_id);
+            dropped_job = true;
         }
         self.future_jobs.insert(new_job_id, new_job);
 
@@ -115,6 +118,7 @@ impl<T: Job> JobStore<T> {
                     self.future_template_to_job_id.remove(&evicted_template_id)
                 {
                     self.future_jobs.remove(&evicted_job_id);
+                    dropped_job = true;
                 }
             }
         }
@@ -122,7 +126,9 @@ impl<T: Job> JobStore<T> {
         // a dropped job (replaced template ID or evicted-oldest) may have been the last one
         // holding a retired extranonce prefix alive; release such slots now rather than at the
         // next chain transition, which a peer can withhold
-        self.prune_retired_extranonce_prefixes();
+        if dropped_job {
+            self.prune_retired_extranonce_prefixes();
+        }
 
         new_job_id
     }
@@ -138,8 +144,8 @@ impl<T: Job> JobStore<T> {
         let job_id = active_job.get_job_id();
         self.past_jobs.insert(job_id, active_job);
 
-        // a replaced job_id moves to the back of the eviction order
-        self.past_job_order.retain(|id| *id != job_id);
+        // job IDs are minted by the job factory, strictly monotonic per channel, so a retiring
+        // ID can never already be in the eviction order
         self.past_job_order.push_back(job_id);
 
         if self.past_jobs.len() > MAX_PAST_JOBS {
@@ -168,8 +174,8 @@ impl<T: Job> JobStore<T> {
             let job_id = active_job.get_job_id();
             self.past_jobs.insert(job_id, active_job);
 
-            // a replaced job_id moves to the back of the eviction order
-            self.past_job_order.retain(|id| *id != job_id);
+            // job IDs are minted by the job factory, strictly monotonic per channel, so a
+            // retiring ID can never already be in the eviction order
             self.past_job_order.push_back(job_id);
         }
     }
@@ -197,30 +203,23 @@ impl<T: Job> JobStore<T> {
     }
 
     /// Activates a future job given by template ID and header timestamp, dropping the previously
-    /// active job (if any) instead of retiring it to past jobs.
+    /// active job (if any) instead of keeping it as stale.
     /// Returns `true` if successful, `false` if not found.
     ///
     /// For channels that never validate shares (group channels), which keep no past or stale
-    /// job history.
+    /// job history. A failed activation leaves channel state untouched.
     pub fn activate_future_job_replacing_active(
         &mut self,
         template_id: u64,
         prev_hash_header_timestamp: u32,
     ) -> bool {
-        // the active job is only dropped once activation is known to succeed, so that a failed
-        // activation does not corrupt channel state
-        let activatable = self
-            .future_template_to_job_id
-            .get(&template_id)
-            .is_some_and(|job_id| self.future_jobs.contains_key(job_id));
-        if !activatable {
-            return false;
+        let activated = self.activate_future_job(template_id, prev_hash_header_timestamp);
+        if activated {
+            // group channels keep no job history: the job displaced by this activation went
+            // stale above and is dropped here
+            self.stale_jobs.clear();
         }
-
-        // with no active job left to retire, the activation below leaves past and stale jobs
-        // empty
-        self.active_job = None;
-        self.activate_future_job(template_id, prev_hash_header_timestamp)
+        activated
     }
 
     /// Activates a future job given by template ID and header timestamp.
