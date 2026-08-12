@@ -24,10 +24,11 @@ pub const MAX_FUTURE_JOBS: usize = 16;
 ///
 /// Upstream servers control the job stream, so a malicious or buggy server can force one retained
 /// past job per immediately-active job message. Bounding this map prevents unbounded memory
-/// growth. Past jobs exist for late-share validation, so the cap must stay nonzero; shares
-/// against an evicted job degrade to
-/// [`InvalidJobId`](crate::client::share_accounting::ShareValidationError::InvalidJobId) within a
-/// single tip window. On overflow, the oldest past job is evicted.
+/// growth. Past jobs exist for late-share validation, so the cap must stay nonzero. On overflow,
+/// the oldest past job is evicted: a share against it is rejected as
+/// [`InvalidJobId`](crate::client::share_accounting::ShareValidationError::InvalidJobId) even
+/// though it would otherwise have been accepted and propagated — a bounded loss of creditable
+/// work, the price of bounding memory under a hostile upstream.
 ///
 /// 50 matches the server-side cap, so a proxy's client channel never evicts a job its upstream
 /// still accepts, and buys ample headroom over the reachable submit depth of ~1-2 past jobs at a

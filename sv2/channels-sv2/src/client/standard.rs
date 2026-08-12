@@ -302,8 +302,9 @@ impl StandardChannel {
     }
 
     // Moves a displaced job into past jobs, evicting the oldest past job beyond
-    // [`MAX_PAST_JOBS`]. A share against an evicted job degrades to `InvalidJobId` instead of
-    // `Stale`, acceptable within a single tip window.
+    // [`MAX_PAST_JOBS`]. A share against an evicted job is rejected as `InvalidJobId` even
+    // though it would otherwise have been accepted and propagated: a bounded loss of
+    // creditable work, the price of bounding memory under a hostile upstream.
     fn retire_job_to_past(&mut self, job: StandardJob) {
         let job_id = job.0.job_id;
         self.past_jobs.insert(job_id, job);
@@ -369,19 +370,21 @@ impl StandardChannel {
             None => return Err(StandardChannelError::JobIdNotFound),
         };
 
-        // the job that was active under the previous chain tip must be retired to stale rather
-        // than silently dropped, otherwise a late share for it would be rejected as
-        // InvalidJobId instead of Stale
-        if let Some(previously_active_job) = previously_active_job {
-            self.retire_job_to_past(previously_active_job);
-        }
-
         // all other future jobs are now useless
         self.future_jobs.clear();
         self.future_job_order.clear();
 
         // mark all past jobs as stale, so that shares are not propagated
         self.stale_jobs = self.past_jobs.clone();
+
+        // the job that was active under the previous chain tip goes stale with them rather
+        // than being silently dropped, bypassing the MAX_PAST_JOBS cap: retiring it through
+        // the capped past path would push the oldest past job out of the stale set, and a
+        // late share for either job would be rejected as InvalidJobId instead of Stale
+        if let Some(previously_active_job) = previously_active_job {
+            self.stale_jobs
+                .insert(previously_active_job.0.job_id, previously_active_job);
+        }
 
         // clear past jobs, as we're no longer going to propagate shares for them
         self.past_jobs.clear();
@@ -1447,6 +1450,78 @@ mod tests {
         assert_eq!(channel.get_stale_jobs_count(), 1);
         assert!(channel.get_stale_job(1).is_some());
         assert_eq!(channel.get_past_jobs_count(), 0);
+    }
+
+    #[test]
+    fn test_set_new_prev_hash_keeps_all_past_jobs_in_stale_set() {
+        // Regression test: with past jobs at the MAX_PAST_JOBS cap, retiring the displaced
+        // active job through the capped past path evicted the oldest past job right before
+        // past drained into stale, so its late share was rejected as InvalidJobId instead of
+        // Stale. The displaced job must go stale with the whole past set (bounded at
+        // MAX_PAST_JOBS + 1).
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+        );
+
+        let merkle_root = [
+            189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84, 56,
+            86, 147, 71, 243, 44, 18, 107, 167, 169, 169, 66, 186, 98,
+        ];
+
+        // fill past jobs to the cap: jobs 0..=MAX_PAST_JOBS are immediately active, each
+        // retiring its predecessor
+        for job_id in 0..=MAX_PAST_JOBS as u32 {
+            channel.on_new_mining_job(NewMiningJob {
+                channel_id,
+                job_id,
+                merkle_root: merkle_root.into(),
+                version: 536870912,
+                min_ntime: Sv2Option::new(Some(1746839900)),
+            });
+        }
+
+        // a future job to activate on the tip transition
+        let future_job_id = 100;
+        channel.on_new_mining_job(NewMiningJob {
+            channel_id,
+            job_id: future_job_id,
+            merkle_root: merkle_root.into(),
+            version: 536870912,
+            min_ntime: Sv2Option::new(None),
+        });
+
+        let prev_hash: [u8; 32] = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ];
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: future_job_id,
+                prev_hash: prev_hash.into(),
+                nbits: 503543726,
+                min_ntime: 1746839905,
+            })
+            .unwrap();
+
+        // the displaced active job and every retained past job are stale — none dropped
+        assert_eq!(channel.get_stale_jobs_count(), MAX_PAST_JOBS + 1);
+        for job_id in 0..=MAX_PAST_JOBS as u32 {
+            assert!(channel.get_stale_job(job_id).is_some());
+        }
+        assert_eq!(channel.get_past_jobs_count(), 0);
+        assert_eq!(channel.get_active_job().unwrap().0.job_id, future_job_id);
     }
 
     #[test]
