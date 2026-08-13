@@ -1,7 +1,7 @@
 //! Performance benchmarks for SV2 framing layer operations
 //! Tests both Vec and buffer_pool backends across different message sizes
 
-use binary_sv2::Serialize;
+use binary_sv2::{B016MOwned, Serialize};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use framing_sv2::{framing::Sv2Frame, header::Header};
 
@@ -42,12 +42,15 @@ fn frame_from_payload_size(size: usize) -> Vec<u8> {
 
 #[derive(Serialize, Clone)]
 struct Test {
-    _a: Vec<u8>,
+    _a: B016MOwned,
 }
 
 impl Test {
+    // `size` is the total encoded message size: 3-byte B016M length prefix + data
     fn new(size: usize) -> Self {
-        Test { _a: vec![2; size] }
+        Test {
+            _a: vec![2; size - 3].try_into().unwrap(),
+        }
     }
 }
 
@@ -71,7 +74,7 @@ fn bench_serialize(c: &mut Criterion) {
 
     for &size in PAYLOAD_SIZES {
         let frame =
-            Sv2Frame::<Vec<u8>, Slice>::from_bytes(frame_from_payload_size(size).into()).unwrap();
+            Sv2Frame::<Test, Slice>::from_bytes(frame_from_payload_size(size).into()).unwrap();
 
         let mut buf = vec![0u8; frame.encoded_length()];
 
@@ -92,7 +95,7 @@ fn bench_from_bytes(c: &mut Criterion) {
     for &size in PAYLOAD_SIZES {
         let frame = frame_from_payload_size(size);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| Sv2Frame::<Vec<u8>, _>::from_bytes(black_box(frame.clone())).unwrap())
+            b.iter(|| Sv2Frame::<Test, _>::from_bytes(black_box(frame.clone())).unwrap())
         });
     }
 
@@ -106,7 +109,7 @@ fn bench_size_hint(c: &mut Criterion) {
     for &size in PAYLOAD_SIZES {
         let frame = frame_from_payload_size(size);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| Sv2Frame::<Vec<u8>, Slice>::size_hint(black_box(&frame)))
+            b.iter(|| Sv2Frame::<Test, Slice>::size_hint(black_box(&frame)))
         });
     }
 
