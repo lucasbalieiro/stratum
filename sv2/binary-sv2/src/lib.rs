@@ -231,16 +231,3 @@ impl GetSize for Vec<u8> {
         self.len()
     }
 }
-
-impl From<Vec<u8>> for EncodableField<'_> {
-    fn from(v: Vec<u8>) -> Self {
-        EncodableField::Struct(v.into_iter().map(Into::into).collect())
-    }
-}
-
-#[cfg(feature = "with_buffer_pool")]
-impl From<buffer_sv2::Slice> for EncodableField<'_> {
-    fn from(_v: buffer_sv2::Slice) -> Self {
-        unreachable!()
-    }
-}
