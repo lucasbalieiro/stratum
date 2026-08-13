@@ -124,7 +124,7 @@ macro_rules! test_datatype_roundtrip {
             // Ensure serialization is canonical: re-encoding must match the consumed input.
             assert_eq!(
                 encoded,
-                input[..encoded.get_size()],
+                input[..encoded.len()],
                 "Serialization is not stable"
             );
         }
@@ -162,7 +162,7 @@ macro_rules! test_datatype_roundtrip {
             // reserialization must match the consumed input bytes.
             assert_eq!(
                 encoded,
-                input[..encoded.get_size()],
+                input[..encoded.len()],
                 "{}: Serialization is not stable",
                 stringify!($datatype)
             );
