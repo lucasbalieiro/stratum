@@ -224,10 +224,3 @@ pub enum Error {
     /// elements.
     Sv2OptionHaveMoreThenOneElement(u8),
 }
-
-/// Vec<u8> is used as the Sv2 type Bytes
-impl GetSize for Vec<u8> {
-    fn get_size(&self) -> usize {
-        self.len()
-    }
-}
