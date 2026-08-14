@@ -27,9 +27,12 @@ The crate supports the following mappings between Rust and SV2 types
 | `f32`       | `F32`          |  
 | `Str0255`   | `STRO_255`     |  
 | `Signature` | `SIGNATURE`    |  
-| `[u8]`      | `BYTES`        |  
 | `Seq0255`   | `SEQ0_255[T]`  |  
 | `Seq064K`   | `SEQ0_64K[T]`  | 
+
+`BYTES` is not listed above: it only appears as the length-prefixed frame payload, whose length
+comes from the frame header, so it is handled by the framing layer (`framing-sv2`) rather than by
+this crate.
 
 
 ## Features

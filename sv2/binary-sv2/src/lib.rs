@@ -26,11 +26,14 @@
 //! B0255    <-> B0_255
 //! B064K    <-> B0_64K
 //! B016M    <-> B0_16M
-//! [u8]     <-> BYTES
 //! Pubkey   <-> PUBKEY
 //! Seq0255  <-> SEQ0_255[T]
 //! Seq064K  <-> SEQ0_64K[T]
 //! ```
+//!
+//! `BYTES` is not in this table: it only appears as the length-prefixed frame payload, whose
+//! length comes from the frame header, so it is handled by the framing layer (`framing-sv2`)
+//! rather than by this crate.
 //!
 //! # Encoding & Decoding
 //!
