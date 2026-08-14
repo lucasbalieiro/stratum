@@ -301,7 +301,7 @@ fn update_extension_type(extension_type: u16, channel_msg: bool) -> u16 {
 mod tests {
     use super::*;
     use alloc::vec;
-    use binary_sv2::Serialize;
+    use binary_sv2::{B064KOwned, Serialize};
     use quickcheck::{Arbitrary, Gen};
     use quickcheck_macros::quickcheck;
 
@@ -325,7 +325,7 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Serialize)]
     struct TestMessage {
-        data: Vec<u8>,
+        data: B064KOwned,
     }
 
     impl Arbitrary for TestMessage {
@@ -394,7 +394,9 @@ mod tests {
     #[quickcheck]
     fn prop_sv2frame_serialization_roundtrip_small(data: Vec<u8>) {
         let data: Vec<u8> = data.iter().take(1000).copied().collect();
-        let msg = TestMessage { data };
+        let msg = TestMessage {
+            data: data.try_into().unwrap(),
+        };
         let msg_type = 0x01u8;
         let extension_type = 0x0000u16;
 

@@ -26,11 +26,14 @@
 //! B0255    <-> B0_255
 //! B064K    <-> B0_64K
 //! B016M    <-> B0_16M
-//! [u8]     <-> BYTES
 //! Pubkey   <-> PUBKEY
 //! Seq0255  <-> SEQ0_255[T]
 //! Seq064K  <-> SEQ0_64K[T]
 //! ```
+//!
+//! `BYTES` is not in this table: it only appears as the length-prefixed frame payload, whose
+//! length comes from the frame header, so it is handled by the framing layer (`framing-sv2`)
+//! rather than by this crate.
 //!
 //! # Encoding & Decoding
 //!
@@ -223,24 +226,4 @@ pub enum Error {
     /// Indicates a protocol constraint violation where `Sv2Option` unexpectedly contains multiple
     /// elements.
     Sv2OptionHaveMoreThenOneElement(u8),
-}
-
-/// Vec<u8> is used as the Sv2 type Bytes
-impl GetSize for Vec<u8> {
-    fn get_size(&self) -> usize {
-        self.len()
-    }
-}
-
-impl From<Vec<u8>> for EncodableField<'_> {
-    fn from(v: Vec<u8>) -> Self {
-        EncodableField::Struct(v.into_iter().map(Into::into).collect())
-    }
-}
-
-#[cfg(feature = "with_buffer_pool")]
-impl From<buffer_sv2::Slice> for EncodableField<'_> {
-    fn from(_v: buffer_sv2::Slice) -> Self {
-        unreachable!()
-    }
 }
