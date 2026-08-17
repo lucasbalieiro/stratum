@@ -809,6 +809,10 @@ impl ExtendedChannel {
         let prev_hash = chain_tip.prev_hash();
         let nbits = CompactTarget::from_consensus(chain_tip.nbits());
 
+        // no per-job min_ntime check is needed here, unlike client channels: template jobs
+        // take min_ntime from the chain tip at creation, and on_set_custom_mining_job syncs
+        // the tip to each custom job's min_ntime and stales all history whenever it changes,
+        // so no non-stale job can carry a min_ntime above the current tip's
         if share.ntime < chain_tip.min_ntime() {
             self.share_accounting
                 .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE);
