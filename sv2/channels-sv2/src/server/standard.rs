@@ -44,7 +44,7 @@ use crate::{
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
     target::{bytes_to_hex, hash_rate_to_target, u256_to_block_hash},
-    MAX_EXTRANONCE_LEN, VERSION_ROLLING_MASK,
+    MAX_EXTRANONCE_LEN, MAX_FUTURE_BLOCK_TIME, VERSION_ROLLING_MASK,
 };
 use bitcoin::{
     absolute::LockTime,
@@ -629,8 +629,10 @@ impl StandardChannel {
     /// Validates a submitted share and updates accounting state.
     ///
     /// Returns the result of share validation, including block found, valid share, duplicate, or
-    /// error if the share is stale, does not meet target, or has ntime below the chain tip's
-    /// `min_ntime`.
+    /// error if the share is stale, does not meet target, or has ntime outside
+    /// `[min_ntime, min_ntime + MAX_FUTURE_BLOCK_TIME]` relative to the chain tip (see
+    /// [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the spec's
+    /// elapsed-time window).
     pub fn validate_share(
         &mut self,
         share: SubmitSharesStandardOwned,
@@ -699,6 +701,16 @@ impl StandardChannel {
         let nbits = CompactTarget::from_consensus(chain_tip.nbits());
 
         if share.ntime < chain_tip.min_ntime() {
+            self.share_accounting
+                .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE);
+            return Err(ShareValidationError::Invalid(
+                ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
+            ));
+        }
+
+        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at
+        // chain-tip receipt, since this crate has no clock (see MAX_FUTURE_BLOCK_TIME)
+        if share.ntime > chain_tip.min_ntime().saturating_add(MAX_FUTURE_BLOCK_TIME) {
             self.share_accounting
                 .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE);
             return Err(ShareValidationError::Invalid(
@@ -1631,7 +1643,11 @@ mod tests {
         }];
 
         // network target: 000000000000d7c0000000000000000000000000000000000000000000000000
-        let ntime = 1745596910;
+        // anchor the tip within the pre-mined share's consensus window: the share was
+        // mined with ntime 1745611105, and validation rejects ntime beyond the tip's
+        // min_ntime + MAX_FUTURE_BLOCK_TIME (the header hash does not depend on the tip's
+        // timestamp, so the pre-mined vectors stay valid)
+        let ntime = 1745611105 - 60;
         let prev_hash = [
             154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
             162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
@@ -1730,7 +1746,11 @@ mod tests {
             script_pubkey: script,
         }];
 
-        let ntime = 1745596910;
+        // anchor the tip within the pre-mined share's consensus window: the share was
+        // mined with ntime 1745611105, and validation rejects ntime beyond the tip's
+        // min_ntime + MAX_FUTURE_BLOCK_TIME (the header hash does not depend on the tip's
+        // timestamp, so the pre-mined vectors stay valid)
+        let ntime = 1745611105 - 60;
         let prev_hash = [
             154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
             162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
@@ -1838,7 +1858,11 @@ mod tests {
             script_pubkey: script,
         }];
 
-        let ntime = 1745596910;
+        // anchor the tip within the pre-mined share's consensus window: the share was
+        // mined with ntime 1745611105, and validation rejects ntime beyond the tip's
+        // min_ntime + MAX_FUTURE_BLOCK_TIME (the header hash does not depend on the tip's
+        // timestamp, so the pre-mined vectors stay valid)
+        let ntime = 1745611105 - 60;
         let prev_hash = [
             154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
             162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
@@ -2537,5 +2561,99 @@ mod tests {
         // target metadata must not outlive the jobs it belongs to: one entry for the active
         // job plus one per retained past job
         assert_eq!(standard_channel.job_id_to_target.len(), MAX_PAST_JOBS + 1);
+    }
+
+    #[test]
+    fn test_share_validation_ntime_above_max_future_block_time() {
+        // Regression test: a share ntime beyond the chain tip's min_ntime +
+        // MAX_FUTURE_BLOCK_TIME would put a consensus-invalid timestamp in the block header,
+        // so it must be rejected; ntime exactly on the bound is still accepted.
+        let standard_channel_id = 1;
+
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut standard_channel = StandardChannel::new(
+            standard_channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1_000.0,
+            100,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![2, 159, 0, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967294,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 158,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // anchor the tip so the pre-mined share (ntime 1745611105, nonce 92092, from
+        // test_share_validation_valid_share) sits exactly on the upper bound
+        let share_ntime: u32 = 1745611105;
+        let ntime = share_ntime - crate::MAX_FUTURE_BLOCK_TIME;
+        let prev_hash = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        let n_bits = 453040064;
+        standard_channel.set_chain_tip(ChainTip::new(prev_hash, n_bits, ntime));
+        standard_channel
+            .on_new_template(template, coinbase_reward_outputs)
+            .unwrap();
+
+        let share = |sequence_number: u32, ntime: u32| SubmitSharesStandardOwned {
+            channel_id: standard_channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce: 92092,
+            ntime,
+            version: 536870912,
+        };
+
+        // one second above the bound: rejected before any PoW evaluation
+        let res = standard_channel.validate_share(share(0, share_ntime + 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // u32::MAX is likewise rejected (the bound saturates instead of wrapping)
+        let res = standard_channel.validate_share(share(1, u32::MAX));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // exactly on the bound: the pre-mined share is accepted
+        let res = standard_channel.validate_share(share(2, share_ntime));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
     }
 }

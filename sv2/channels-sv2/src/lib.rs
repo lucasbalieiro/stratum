@@ -23,6 +23,20 @@ pub use extranonce_manager::MAX_EXTRANONCE_LEN;
 /// version. All other bits of a share's version must match the job's version exactly.
 pub const VERSION_ROLLING_MASK: u32 = 0x1fffffe0;
 
+/// Mirrors Bitcoin Core's `MAX_FUTURE_BLOCK_TIME` (`src/chain.h`): a block timestamp more than
+/// 2 hours in the future is consensus-invalid.
+///
+/// Share validation enforces `share.ntime <= chain_tip.min_ntime() + MAX_FUTURE_BLOCK_TIME`,
+/// anchoring the consensus allowance at chain-tip receipt (`min_ntime` ≈ wall time when the tip
+/// arrived, since this crate is `no_std`-compatible and has no clock). This is deliberately
+/// looser than the Sv2 spec's elapsed-time window (`ntime <= SetNewPrevHash timestamp + seconds
+/// elapsed since receipt`, which is stricter than consensus): embedding applications that have a
+/// time source can additionally enforce the spec-exact window. The bound equals the consensus
+/// limit at tip receipt and becomes conservative as the tip ages; a false rejection would require
+/// a >2h-old chain tip *and* a miner stamping wall time instead of rolling from the job's
+/// `min_ntime` — a known, negligible edge.
+pub const MAX_FUTURE_BLOCK_TIME: u32 = 2 * 60 * 60;
+
 #[cfg(not(feature = "no_std"))]
 pub mod server;
 
