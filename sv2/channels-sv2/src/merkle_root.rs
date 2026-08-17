@@ -11,6 +11,8 @@ use tracing::error;
 /// Computes the Merkle root from coinbase transaction components and a path of transaction hashes.
 ///
 /// Validates and deserializes a coinbase transaction before building the 32-byte Merkle root.
+/// The assembled bytes must not only deserialize as a transaction, but also satisfy the coinbase
+/// invariant (exactly one input spending the null outpoint, see [`Transaction::is_coinbase`]).
 /// Returns [`None`] if the arguments are invalid.
 ///
 /// ## Components
@@ -40,6 +42,11 @@ pub fn merkle_root_from_path<T: AsRef<[u8]>>(
         }
     };
 
+    if !coinbase.is_coinbase() {
+        error!("ERROR: not a coinbase transaction");
+        return None;
+    }
+
     let coinbase_id: [u8; 32] = *coinbase.compute_txid().as_ref();
 
     Some(merkle_root_from_path_(coinbase_id, path))
@@ -62,4 +69,47 @@ pub fn merkle_root_from_path_<T: AsRef<[u8]>>(coinbase_id: [u8; 32], path: &[T])
         root = *DHash::from_engine(engine).as_ref();
     }
     root
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoin::{
+        absolute::LockTime,
+        blockdata::witness::Witness,
+        transaction::{OutPoint, TxIn, TxOut, Version},
+        Amount, ScriptBuf, Sequence, Txid,
+    };
+
+    fn tx_with_previous_output(previous_output: OutPoint) -> Transaction {
+        Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::from_consensus(0),
+            input: vec![TxIn {
+                previous_output,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence(0xffffffff),
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(5_000_000_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn test_rejects_semantically_non_coinbase_transaction() {
+        // a validly encoded transaction whose sole input spends a non-null outpoint is not a
+        // coinbase, and must be rejected rather than yield a merkle root
+        let non_coinbase =
+            tx_with_previous_output(OutPoint::new(Txid::from_byte_array([0xab; 32]), 0));
+        let serialized = consensus::serialize(&non_coinbase);
+        assert!(merkle_root_from_path::<&[u8]>(&serialized, &[], &[], &[]).is_none());
+
+        // the same transaction with a null outpoint is a coinbase and must be accepted
+        let coinbase = tx_with_previous_output(OutPoint::null());
+        let serialized = consensus::serialize(&coinbase);
+        assert!(merkle_root_from_path::<&[u8]>(&serialized, &[], &[], &[]).is_some());
+    }
 }
