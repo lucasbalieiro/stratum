@@ -35,6 +35,20 @@ pub const MAX_FUTURE_JOBS: usize = 16;
 /// small measured memory cost — see the load-test data in PR #2290.
 pub const MAX_PAST_JOBS: usize = 50;
 
+/// Maximum number of accepted-share hashes a client channel retains for duplicate detection.
+///
+/// 4 096 hashes is one 128 KB allocation, which keeps the `no_std`/embedded use case viable:
+/// the bound has to be affordable on the smallest supported device, since an adversarial
+/// upstream advertising a trivial target can drive the cache to it at message speed.
+///
+/// A client cache does not need to hold a whole chain tip's worth of shares. It exists to catch
+/// a share source re-submitting work it already sent — a retransmit or a buggy loop, which
+/// arrives within seconds — not to reconcile a tip. 4 096 covers ~11 hours of history for a
+/// typical 6 shares/min channel and ~7 minutes for a very busy 600 shares/min proxy channel,
+/// far beyond any realistic duplicate window in both cases. Overflow evicts oldest-first, and
+/// an evicted-then-replayed hash costs one double-counted local statistic.
+pub const MAX_SEEN_SHARES: usize = 4_096;
+
 // Type aliases that switch between `std::collections` and `hashbrown`
 // depending on whether the `no_std` feature is enabled.
 #[cfg(not(feature = "no_std"))]

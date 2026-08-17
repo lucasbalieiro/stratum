@@ -230,7 +230,10 @@ impl StandardChannel {
             job_id_to_target: HashMap::new(),
             nominal_hashrate,
             stable_hashrate: false,
-            share_accounting: ShareAccounting::new(share_batch_size),
+            share_accounting: ShareAccounting::new(
+                share_batch_size,
+                crate::seen_shares_budget(expected_share_per_minute as f64),
+            ),
             expected_share_per_minute,
             job_store: JobStore::new(),
             job_factory,
@@ -637,6 +640,13 @@ impl StandardChannel {
         &mut self,
         share: SubmitSharesStandardOwned,
     ) -> Result<ShareValidationResult, ShareValidationError> {
+        // the accepted-share dedup cache is a hard budget on servers: forgetting a
+        // still-valid hash would re-enable duplicate-share replay, so once the budget is hit
+        // the channel must be closed by the embedding application
+        if self.share_accounting.is_seen_shares_budget_exhausted() {
+            return Err(ShareValidationError::SeenSharesBudgetExhausted);
+        }
+
         let job_id = share.job_id;
 
         // check if job_id is active job
@@ -2655,5 +2665,106 @@ mod tests {
         // exactly on the bound: the pre-mined share is accepted
         let res = standard_channel.validate_share(share(2, share_ntime));
         assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+    }
+
+    #[test]
+    fn test_validate_share_fails_once_seen_shares_budget_is_exhausted() {
+        // Regression test: `seen_shares` grows with every accepted share and is only flushed on
+        // chain-tip transitions, whose timing the peer controls. The budget derived from the
+        // channel's expected share rate must turn overflow into an explicit error (so the
+        // embedding application closes the channel) instead of unbounded memory growth.
+        let standard_channel_id = 1;
+
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let expected_share_per_minute = 1.0;
+        let mut standard_channel = StandardChannel::new(
+            standard_channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1_000.0,
+            100,
+            expected_share_per_minute,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![2, 159, 0, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967294,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 158,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        let share_ntime: u32 = 1745611105;
+        let prev_hash = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        standard_channel.set_chain_tip(ChainTip::new(prev_hash, 453040064, share_ntime - 60));
+        standard_channel
+            .on_new_template(template, coinbase_reward_outputs)
+            .unwrap();
+
+        // fill the dedup cache up to the channel's budget (1 share/min derives 1 200,
+        // clamped up to MIN_SEEN_SHARES_CAP = 4 096)
+        let budget = crate::seen_shares_budget(expected_share_per_minute as f64);
+        for i in 0..budget as u32 {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_le_bytes());
+            standard_channel.share_accounting.update_share_accounting(
+                1.0,
+                i,
+                <bitcoin::hashes::sha256d::Hash as bitcoin::hashes::Hash>::from_slice(&bytes)
+                    .unwrap(),
+            );
+        }
+
+        // the pre-mined valid share (from test_share_validation_valid_share) must now be
+        // refused with the budget error rather than grow the cache further
+        let valid_share = SubmitSharesStandardOwned {
+            channel_id: standard_channel_id,
+            sequence_number: 1,
+            job_id: 1,
+            nonce: 92092,
+            ntime: share_ntime,
+            version: 536870912,
+        };
+        let res = standard_channel.validate_share(valid_share);
+        assert!(matches!(
+            res.unwrap_err(),
+            ShareValidationError::SeenSharesBudgetExhausted
+        ));
     }
 }

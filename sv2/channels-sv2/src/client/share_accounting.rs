@@ -5,8 +5,8 @@
 //! are intended for use in Mining Clients.
 
 extern crate alloc;
-use super::{HashMap, HashSet};
-use alloc::string::String;
+use super::{HashMap, MAX_SEEN_SHARES};
+use alloc::{collections::VecDeque, string::String};
 use bitcoin::hashes::sha256d::Hash;
 use mining_sv2::{
     ERROR_CODE_SUBMIT_SHARES_BAD_EXTRANONCE_SIZE, ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
@@ -109,7 +109,11 @@ pub struct ShareAccounting {
     validated_shares: u32,
     validated_work_sum: f64,
     rejected_shares: HashMap<String, u32>, // <error_code, count>
-    seen_shares: HashSet<Hash>,
+    // Accepted share hashes, oldest at the front; bounded by `MAX_SEEN_SHARES`.
+    // A flat `VecDeque` rather than a set plus a companion order queue: storing each hash once
+    // halves the footprint that matters on embedded targets, and scanning 4 096 contiguous
+    // hashes per share is negligible at client share rates.
+    seen_shares: VecDeque<Hash>,
     best_diff: f64,
     blocks_found: u32,
 }
@@ -131,7 +135,7 @@ impl ShareAccounting {
             validated_work_sum: 0.0,
 
             rejected_shares: HashMap::new(),
-            seen_shares: HashSet::new(),
+            seen_shares: VecDeque::new(),
             best_diff: 0.0,
             blocks_found: 0,
         }
@@ -190,6 +194,17 @@ impl ShareAccounting {
     /// called when the upstream server confirms via [`SubmitSharesSuccess`](mining_sv2::SubmitSharesSuccess).
     ///
     /// `validated_shares` saturates at `u32::MAX`.
+    ///
+    /// At most [`MAX_SEEN_SHARES`] hashes are retained for duplicate detection; beyond that the
+    /// oldest hash is evicted.
+    ///
+    /// Unlike the server side, overflow evicts rather than failing: a replay of an evicted hash
+    /// only double-counts one local statistic — nothing is paid out, and nothing is forwarded as
+    /// newly-validated that the upstream won't independently dedup. That is also why the bound
+    /// is a flat constant here instead of being derived from the channel's target and hashrate:
+    /// the target is upstream-controlled, so a derived bound could not constrain a hostile
+    /// upstream anyway, and it would have to be clamped to something affordable on the smallest
+    /// supported device regardless — which is exactly what [`MAX_SEEN_SHARES`] already is.
     pub fn track_validated_share(
         &mut self,
         share_sequence_number: u32,
@@ -199,13 +214,21 @@ impl ShareAccounting {
         self.last_share_sequence_number = share_sequence_number;
         self.validated_shares = self.validated_shares.saturating_add(1);
         self.validated_work_sum += share_work;
-        self.seen_shares.insert(share_hash);
+        if !self.seen_shares.contains(&share_hash) {
+            // evict before inserting, so the queue never exceeds the bound even transiently and
+            // its backing allocation settles at exactly `MAX_SEEN_SHARES` entries
+            if self.seen_shares.len() == MAX_SEEN_SHARES {
+                self.seen_shares.pop_front();
+            }
+            self.seen_shares.push_back(share_hash);
+        }
     }
 
     /// Clears the set of seen share hashes.
     ///
-    /// Should be called on every chain tip update
-    /// to prevent unbounded memory growth.
+    /// Should be called on every chain tip update to allow new shares for the new tip. This is
+    /// also what makes the seen-shares cap per-tip: the set only ever holds one chain tip's
+    /// worth of validated shares.
     pub fn flush_seen_shares(&mut self) {
         self.seen_shares.clear();
     }
@@ -266,6 +289,9 @@ impl ShareAccounting {
     }
 
     /// Checks if the given share hash has already been seen (duplicate detection).
+    ///
+    /// The underlying queue holds at most [`MAX_SEEN_SHARES`] hashes (oldest evicted first) and
+    /// is flushed on every chain-tip transition.
     pub fn is_share_seen(&self, share_hash: Hash) -> bool {
         self.seen_shares.contains(&share_hash)
     }
@@ -297,7 +323,7 @@ impl ShareAccounting {
 
 #[cfg(test)]
 mod tests {
-    use super::{alloc::format, ShareAccounting, UNKNOWN_ERROR_CODE};
+    use super::{alloc::format, ShareAccounting, MAX_SEEN_SHARES, UNKNOWN_ERROR_CODE};
     use bitcoin::hashes::Hash as _;
 
     #[test]
@@ -370,5 +396,37 @@ mod tests {
             2
         );
         assert_eq!(accounting.get_rejected_shares_count(), 10_002);
+    }
+
+    #[test]
+    fn seen_shares_are_bounded_by_fifo_eviction() {
+        fn hash(i: u32) -> bitcoin::hashes::sha256d::Hash {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_le_bytes());
+            <bitcoin::hashes::sha256d::Hash as bitcoin::hashes::Hash>::from_slice(&bytes).unwrap()
+        }
+
+        let cap = MAX_SEEN_SHARES as u32;
+        let overflow = 100;
+        let mut accounting = ShareAccounting::new();
+
+        // flood past the bound with unique hashes, as an adversarial upstream advertising a
+        // trivial target would
+        for i in 0..cap + overflow {
+            accounting.track_validated_share(i, hash(i), 1.0);
+        }
+
+        // retention is bounded, and it is the oldest hashes that were dropped
+        assert_eq!(accounting.seen_shares.len(), cap as usize);
+        for i in 0..overflow {
+            assert!(!accounting.is_share_seen(hash(i)));
+        }
+        for i in overflow..cap + overflow {
+            assert!(accounting.is_share_seen(hash(i)));
+        }
+
+        // a chain-tip transition clears both the set and the eviction order
+        accounting.flush_seen_shares();
+        assert_eq!(accounting.seen_shares.len(), 0);
     }
 }

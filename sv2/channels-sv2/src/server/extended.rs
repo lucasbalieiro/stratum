@@ -249,7 +249,10 @@ impl ExtendedChannel {
             stable_hashrate: false,
             job_store: JobStore::new(),
             job_factory,
-            share_accounting: ShareAccounting::new(share_batch_size),
+            share_accounting: ShareAccounting::new(
+                share_batch_size,
+                crate::seen_shares_budget(expected_share_per_minute as f64),
+            ),
             expected_share_per_minute,
             chain_tip: None,
         })
@@ -722,6 +725,13 @@ impl ExtendedChannel {
         &mut self,
         share: SubmitSharesExtendedOwned,
     ) -> Result<ShareValidationResult, ShareValidationError> {
+        // the accepted-share dedup cache is a hard budget on servers: forgetting a
+        // still-valid hash would re-enable duplicate-share replay, so once the budget is hit
+        // the channel must be closed by the embedding application
+        if self.share_accounting.is_seen_shares_budget_exhausted() {
+            return Err(ShareValidationError::SeenSharesBudgetExhausted);
+        }
+
         let job_id = share.job_id;
 
         // check if job_id is active job

@@ -69,6 +69,15 @@ pub enum ShareValidationError {
     InvalidCoinbase,
     /// No chain tip is set for the channel (required for share validation).
     NoChainTip,
+    /// The accepted-share dedup cache is full (see [`crate::seen_shares_budget`]).
+    ///
+    /// Forgetting a still-valid hash would re-enable duplicate-share replay (double-counted
+    /// shares are payout fraud), so on the server side the budget is a hard limit rather than an
+    /// eviction threshold. Reaching it means the share rate has far outrun the channel's
+    /// configured expectation for an entire worst-case tip (see [`crate::seen_shares_budget`],
+    /// including its block-cadence assumption), so the embedding application should close the
+    /// channel.
+    SeenSharesBudgetExhausted,
 }
 
 /// The state of share validation in the context of some specific channel (either Extended or
@@ -87,6 +96,7 @@ pub struct ShareAccounting {
     batch_acknowledged: bool,
     share_batch_size: usize,
     seen_shares: HashSet<Hash>,
+    seen_shares_budget: usize,
     best_diff: f64,
     blocks_found: u32,
 }
@@ -95,7 +105,12 @@ impl ShareAccounting {
     /// Constructs a new `ShareAccounting` instance for a channel.
     ///
     /// `share_batch_size` controls how many accepted shares trigger a batch acknowledgment.
-    pub fn new(share_batch_size: usize) -> Self {
+    ///
+    /// `seen_shares_budget` bounds the accepted-share dedup cache; channels derive it from their
+    /// expected share rate via [`crate::seen_shares_budget`]. Once
+    /// [`is_seen_shares_budget_exhausted`](Self::is_seen_shares_budget_exhausted) reports `true`,
+    /// share validation fails with [`ShareValidationError::SeenSharesBudgetExhausted`].
+    pub fn new(share_batch_size: usize, seen_shares_budget: usize) -> Self {
         Self {
             last_share_sequence_number: 0,
             shares_accepted: 0,
@@ -106,6 +121,7 @@ impl ShareAccounting {
             batch_acknowledged: false,
             share_batch_size,
             seen_shares: HashSet::new(),
+            seen_shares_budget,
             best_diff: 0.0,
             blocks_found: 0,
         }
@@ -156,10 +172,22 @@ impl ShareAccounting {
 
     /// Clears the set of seen share hashes.
     ///
-    /// Should be called on every chain tip update to avoid unbounded growth of memory
-    /// and allow new shares for the new tip.
+    /// Should be called on every chain tip update to allow new shares for the new tip. This is
+    /// also what makes the seen-shares budget per-tip: the set only ever holds one chain tip's
+    /// worth of accepted shares.
     pub fn flush_seen_shares(&mut self) {
         self.seen_shares.clear();
+    }
+
+    /// Returns `true` once the accepted-share dedup cache has reached its budget.
+    ///
+    /// Evicting a still-valid hash is never acceptable on a server (it would re-enable
+    /// duplicate-share replay), so overflow is an explicit failure instead: share validation
+    /// returns [`ShareValidationError::SeenSharesBudgetExhausted`] and the embedding application
+    /// should close the channel. The budget is unreachable by a well-behaved channel, see
+    /// [`crate::seen_shares_budget`].
+    pub fn is_seen_shares_budget_exhausted(&self) -> bool {
+        self.seen_shares.len() >= self.seen_shares_budget
     }
 
     /// Returns the sequence number of the last accepted share.
@@ -229,6 +257,10 @@ impl ShareAccounting {
     }
 
     /// Checks if the share hash has already been accepted (duplicate detection).
+    ///
+    /// The underlying set holds at most `seen_shares_budget` hashes (see
+    /// [`is_seen_shares_budget_exhausted`](Self::is_seen_shares_budget_exhausted)) and is flushed
+    /// on every chain-tip transition.
     pub fn is_share_seen(&self, share_hash: Hash) -> bool {
         self.seen_shares.contains(&share_hash)
     }
@@ -274,7 +306,7 @@ mod tests {
 
     #[test]
     fn rejected_shares_are_tracked_by_error_code() {
-        let mut accounting = ShareAccounting::new(10);
+        let mut accounting = ShareAccounting::new(10, 1_200);
 
         accounting.increment_rejected_shares("difficulty-too-low");
         accounting.increment_rejected_shares("duplicate-share");
@@ -293,7 +325,7 @@ mod tests {
 
     #[test]
     fn counters_saturate_at_u32_max() {
-        let mut accounting = ShareAccounting::new(10);
+        let mut accounting = ShareAccounting::new(10, 1_200);
 
         accounting.shares_accepted = u32::MAX - 1;
         accounting.blocks_found = u32::MAX;
@@ -315,7 +347,7 @@ mod tests {
 
     #[test]
     fn rejected_shares_count_saturates() {
-        let mut accounting = ShareAccounting::new(10);
+        let mut accounting = ShareAccounting::new(10, 1_200);
 
         accounting.rejected_shares.insert("a".to_string(), u32::MAX);
         accounting.rejected_shares.insert("b".to_string(), 1);
@@ -325,7 +357,7 @@ mod tests {
 
     #[test]
     fn increment_rejected_shares_saturates() {
-        let mut accounting = ShareAccounting::new(10);
+        let mut accounting = ShareAccounting::new(10, 1_200);
 
         accounting
             .rejected_shares
@@ -333,5 +365,34 @@ mod tests {
         accounting.increment_rejected_shares("err");
 
         assert_eq!(accounting.rejected_shares.get("err"), Some(&u32::MAX));
+    }
+
+    #[test]
+    fn seen_shares_budget_is_a_hard_limit() {
+        fn hash(i: u32) -> bitcoin::hashes::sha256d::Hash {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_le_bytes());
+            <bitcoin::hashes::sha256d::Hash as bitcoin::hashes::Hash>::from_slice(&bytes).unwrap()
+        }
+
+        let budget = 100;
+        let mut accounting = ShareAccounting::new(10, budget);
+
+        for i in 0..budget as u32 {
+            assert!(!accounting.is_seen_shares_budget_exhausted());
+            accounting.update_share_accounting(1.0, i, hash(i));
+        }
+        assert!(accounting.is_seen_shares_budget_exhausted());
+
+        // every hash accepted within the budget stays resident: nothing is evicted, so no
+        // duplicate can ever be re-admitted
+        for i in 0..budget as u32 {
+            assert!(accounting.is_share_seen(hash(i)));
+        }
+
+        // a chain-tip transition resets the budget
+        accounting.flush_seen_shares();
+        assert!(!accounting.is_seen_shares_budget_exhausted());
+        assert!(!accounting.is_share_seen(hash(0)));
     }
 }
