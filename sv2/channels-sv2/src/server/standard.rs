@@ -67,7 +67,7 @@ use mining_sv2::{
 };
 use std::collections::HashMap;
 use template_distribution_sv2::{NewTemplateOwned, SetNewPrevHashOwned as SetNewPrevHash};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Abstraction of a Sv2 Standard Channel.
 ///
@@ -558,8 +558,15 @@ impl StandardChannel {
 
     /// Updates the channel state with a new `SetNewPrevHash` message.
     ///
-    /// If there are no future jobs, returns an error.
     /// If there are future jobs, the active job is set to the job with the given `template_id`.
+    /// If future jobs are queued but none matches the `template_id`, returns an error, leaving
+    /// the chain tip untouched.
+    ///
+    /// If no future jobs are queued, the peer is not conforming to the Template Distribution
+    /// Protocol, which requires at least one future `NewTemplate` before every `SetNewPrevHash`.
+    /// The message is still applied rather than rejected: its chain-tip fields are self-contained
+    /// and remain usable, so discarding them would only leave this channel validating shares
+    /// against a dead tip. The active job (if any) is marked stale and the chain tip is updated.
     ///
     /// All past jobs are cleared.
     pub fn on_set_new_prev_hash(
@@ -568,7 +575,24 @@ impl StandardChannel {
     ) -> Result<(), StandardChannelError> {
         match self.job_store.has_future_jobs() {
             false => {
-                return Err(StandardChannelError::TemplateIdNotFound);
+                // a chain-tip update with no queued future template means the peer broke
+                // the protocol, but the tip itself is still usable, so recover instead of
+                // leaving this channel committed to a dead prev_hash.
+                warn!(
+                    "SetNewPrevHash with no queued future template: non-conforming Template \
+                     Distribution peer, recovering the chain tip"
+                );
+                //
+                // demote the previously-active job to past so that the subsequent
+                // mark_past_jobs_as_stale call moves it into the stale set. without this,
+                // a late share for the still-active old job would skip the stale check in
+                // validate_share and panic on the missing job_id_to_target entry that we
+                // just cleared.
+                self.job_store.deactivate_job();
+                self.job_store.mark_past_jobs_as_stale();
+                // there is no active job in this branch, so any previous job target
+                // mappings are obsolete after the chain tip update.
+                self.job_id_to_target.clear();
             }
             // try to activate the future job, and also mark past jobs as stale
             true => {
@@ -2127,12 +2151,12 @@ mod tests {
     }
 
     #[test]
-    fn test_set_new_prev_hash_without_future_jobs_preserves_state() {
-        // Regression test: when on_set_new_prev_hash is called with no future jobs to
-        // activate, it must return an error WITHOUT corrupting channel state. Previously
-        // the function cleared job_id_to_target before checking for future jobs, so a
-        // caller that treated the error as recoverable would crash on the next share at
-        // the `expect("job target must exist")` site.
+    fn test_set_new_prev_hash_without_future_jobs_updates_chain_tip() {
+        // Regression test: a SetNewPrevHash with no queued future job means the peer broke the
+        // Template Distribution Protocol, which requires at least one future NewTemplate
+        // beforehand. The channel must still recover from it — record the new chain tip and mark
+        // the previously active job stale, rather than reject the message and keep building jobs
+        // on a dead prev_hash.
         let standard_channel_id = 1;
         let user_identity = "user_identity".to_string();
 
@@ -2209,27 +2233,31 @@ mod tests {
         let active_job_id = active_standard_job.get_job_id();
         assert!(!standard_channel.job_store.has_future_jobs());
 
-        // No future jobs available -> on_set_new_prev_hash must return Err.
+        // No future jobs queued -> on_set_new_prev_hash must still record the chain tip.
+        let new_prev_hash: binary_sv2::U256Owned = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ]
+        .into();
         let snph = SetNewPrevHashTdp {
             template_id: 999,
-            prev_hash: [
-                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
-                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
-            ]
-            .into(),
+            prev_hash: new_prev_hash.clone(),
             header_timestamp: ntime + 600,
             n_bits,
             target: [0xff; 32].into(),
         };
-        let res = standard_channel.on_set_new_prev_hash(snph);
-        assert!(matches!(res, Err(StandardChannelError::TemplateIdNotFound)));
+        standard_channel.on_set_new_prev_hash(snph).unwrap();
 
-        // Channel state must be preserved: active job still active, target entry intact.
-        // A subsequent share submission for the still-active job must NOT panic on a
-        // missing job_id_to_target entry. The share itself does not meet target, so we
-        // expect DoesNotMeetTarget — the load-bearing assertion is that it returns
-        // without panicking.
-        let share_low_diff = SubmitSharesStandardOwned {
+        let chain_tip = standard_channel.get_chain_tip().unwrap();
+        assert_eq!(chain_tip.prev_hash(), new_prev_hash);
+        assert_eq!(chain_tip.min_ntime(), ntime + 600);
+        assert_eq!(chain_tip.nbits(), n_bits);
+
+        // The previously active job committed to the old chain tip, so it must now be stale
+        // and a late share for it rejected accordingly (not panic on a missing
+        // job_id_to_target entry).
+        assert!(standard_channel.get_active_job().is_none());
+        let share_for_old_job = SubmitSharesStandardOwned {
             channel_id: standard_channel_id,
             sequence_number: 0,
             job_id: active_job_id,
@@ -2237,11 +2265,28 @@ mod tests {
             ntime: 1745596932,
             version: 536870912,
         };
-        let res = standard_channel.validate_share(share_low_diff);
-        assert!(matches!(
-            res.unwrap_err(),
-            ShareValidationError::DoesNotMeetTarget(_)
-        ));
+        let res = standard_channel.validate_share(share_for_old_job);
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Stale(_)));
+
+        // and the channel is not wedged: the next non-future template can be processed,
+        // since the chain tip is set
+        let mut template = template;
+        template.template_id = 2;
+        standard_channel
+            .on_new_template(
+                template,
+                vec![TxOut {
+                    value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+                    script_pubkey: {
+                        let mut script_bytes = vec![0];
+                        script_bytes.push(20);
+                        script_bytes.extend_from_slice(&pubkey_hash);
+                        ScriptBuf::from(script_bytes)
+                    },
+                }],
+            )
+            .unwrap();
+        assert!(standard_channel.get_active_job().is_some());
     }
 
     #[test]

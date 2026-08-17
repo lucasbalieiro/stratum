@@ -40,6 +40,7 @@ use crate::{
 use bitcoin::transaction::TxOut;
 use std::collections::HashSet;
 use template_distribution_sv2::{NewTemplateOwned, SetNewPrevHashOwned as SetNewPrevHashTdp};
+use tracing::warn;
 
 /// Abstraction of a Group Channel.
 ///
@@ -323,15 +324,31 @@ impl GroupChannel {
     /// this future job is "activated" and set as the active job. The previously active job is
     /// dropped: group channels never validate shares, so no past or stale job history is kept.
     ///
+    /// If no future jobs are queued, the peer is not conforming to the Template Distribution
+    /// Protocol, which requires at least one future `NewTemplate` before every `SetNewPrevHash`.
+    /// The message is still applied rather than rejected: its chain-tip fields are self-contained
+    /// and remain usable, so discarding them would only leave this channel unable to recover. The
+    /// active job (if any) is dropped, since it commits to the previous chain tip.
+    ///
     /// Updates the chain tip for the group channel.
-    /// Returns an error if no matching future job is found, leaving the chain tip untouched.
+    /// Returns an error if future jobs are queued but none matches the `template_id`, leaving
+    /// the chain tip untouched.
     pub fn on_set_new_prev_hash(
         &mut self,
         set_new_prev_hash: SetNewPrevHashTdp,
     ) -> Result<(), GroupChannelError> {
         match self.job_store.has_future_jobs() {
             false => {
-                return Err(GroupChannelError::TemplateIdNotFound);
+                // a chain-tip update with no queued future template means the peer broke
+                // the protocol, but the tip itself is still usable, so recover instead of
+                // wedging the channel. the active job committed to the previous chain tip,
+                // and group channels never validate shares against stored jobs, so it is
+                // dropped outright rather than retired to stale.
+                warn!(
+                    "SetNewPrevHash with no queued future template: non-conforming Template \
+                     Distribution peer, recovering the chain tip"
+                );
+                self.job_store.clear_active_job();
             }
             true => {
                 // activation is a no-op when no future job matches the template id, so the
@@ -780,6 +797,46 @@ mod tests {
 
         // the failed activation must not have corrupted channel state
         assert!(group_channel.get_chain_tip().is_none());
+        assert!(group_channel.get_active_job().is_none());
+    }
+
+    #[test]
+    fn test_set_new_prev_hash_without_future_jobs_updates_chain_tip() {
+        // Regression test: a SetNewPrevHash with no queued future job means the peer broke the
+        // Template Distribution Protocol, which requires at least one future NewTemplate
+        // beforehand. The channel must still recover from it — record the new chain tip rather
+        // than reject the message and wedge the group-job pipeline in a persistent error path,
+        // since the tip carried by the message is self-contained and usable.
+        let mut group_channel = GroupChannel::new(1, 32, None, None).unwrap();
+        assert!(!group_channel.job_store.has_future_jobs());
+        assert!(group_channel.get_chain_tip().is_none());
+
+        let prev_hash: binary_sv2::U256Owned = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ]
+        .into();
+        let set_new_prev_hash = SetNewPrevHash {
+            template_id: 0,
+            prev_hash: prev_hash.clone(),
+            header_timestamp: 1746839905,
+            n_bits: 503543726,
+            target: [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                174, 119, 3, 0, 0,
+            ]
+            .into(),
+        };
+
+        group_channel
+            .on_set_new_prev_hash(set_new_prev_hash)
+            .unwrap();
+
+        let chain_tip = group_channel.get_chain_tip().unwrap();
+        assert_eq!(chain_tip.prev_hash(), prev_hash);
+        assert_eq!(chain_tip.min_ntime(), 1746839905);
+        assert_eq!(chain_tip.nbits(), 503543726);
+        // no job could have been activated
         assert!(group_channel.get_active_job().is_none());
     }
 
