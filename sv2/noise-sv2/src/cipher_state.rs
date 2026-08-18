@@ -94,6 +94,11 @@ where
     // contain the ciphertext. The encryption is performed using the current nonce and the AAD.
     // The nonce is incremented after each successful encryption.
     fn encrypt_with_ad<T: Buffer>(&mut self, ad: &[u8], data: &mut T) -> Result<(), Error> {
+        // The Noise spec reserves nonce 2^64-1: once the counter reaches it, fail instead of
+        // using it or wrapping back to 0.
+        if self.get_n() == u64::MAX {
+            return Err(Error);
+        }
         let n = self.nonce_to_bytes();
         self.set_n(self.get_n() + 1);
         if let Some(c) = self.get_cipher() {
@@ -116,6 +121,9 @@ where
     // contain the plaintext. The decryption is performed using the current nonce and the provided
     // AAD. The nonce is incremented after each successful decryption.
     fn decrypt_with_ad<T: Buffer>(&mut self, ad: &[u8], data: &mut T) -> Result<(), Error> {
+        if self.get_n() == u64::MAX {
+            return Err(Error);
+        }
         let n = self.nonce_to_bytes();
         self.set_n(self.get_n() + 1);
         if let Some(c) = self.get_cipher() {
@@ -212,5 +220,24 @@ impl<C: AeadCipher> CipherState<C> for Cipher<C> {
 
     fn set_k(&mut self, k: Option<[u8; 32]>) {
         self.k = k;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+
+    #[test]
+    fn exhausted_nonce_fails_instead_of_wrapping() {
+        let key = [7u8; 32];
+        let cipher = ChaCha20Poly1305::new(&key.into());
+        let mut cipher = Cipher::from_key_and_cipher(key, cipher);
+        cipher.set_n(u64::MAX);
+
+        let mut data = alloc::vec![1u8, 2, 3];
+        assert!(cipher.encrypt(&mut data).is_err());
+        assert!(cipher.decrypt(&mut data).is_err());
+        assert_eq!(cipher.get_n(), u64::MAX);
     }
 }
