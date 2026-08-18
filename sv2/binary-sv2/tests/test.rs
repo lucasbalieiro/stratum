@@ -732,3 +732,18 @@ mod test_b064k_length_prefix {
         );
     }
 }
+
+mod test_to_writer_len {
+    use super::*;
+
+    #[test]
+    fn to_writer_reports_bytes_written_into_oversized_buffer() {
+        let mut oversized = [0xAAu8; 16];
+
+        let written = to_writer(0x0102_0304_u32, &mut oversized[..]).unwrap();
+
+        assert_eq!(written, 4);
+        assert_eq!(&oversized[..written], &[0x04, 0x03, 0x02, 0x01]);
+        assert!(oversized[written..].iter().all(|b| *b == 0xAA));
+    }
+}
