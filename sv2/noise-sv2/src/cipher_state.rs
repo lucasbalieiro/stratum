@@ -27,11 +27,9 @@
 // The [`CipherState`] trait and [`Cipher`] type manage secure data handling, key management, and
 // nonce tracking throughout the communication session.
 
-use core::ptr;
-use zeroize::Zeroize;
-
 use crate::aed_cipher::AeadCipher;
 use chacha20poly1305::aead::{Buffer, Error};
+use zeroize::Zeroize;
 
 // The `CipherState` trait manages AEAD ciphers for secure communication, handling the encryption
 // key, nonce, and cipher instance, ensuring proper key and nonce management.
@@ -189,12 +187,7 @@ impl<C: AeadCipher> Cipher<C> {
 
     // Securely erases the stored encryption key.
     pub fn erase_k(&mut self) {
-        if let Some(k) = self.k.as_mut() {
-            for b in k {
-                unsafe { ptr::write_volatile(b, 0) };
-            }
-            self.k = None;
-        }
+        self.k.zeroize();
     }
 }
 

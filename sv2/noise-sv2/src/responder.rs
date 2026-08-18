@@ -34,7 +34,7 @@
 // The [`Drop`] trait is implemented to automatically trigger secure erasure when the [`Responder`]
 // instance goes out of scope, preventing potential misuse or leakage of cryptographic material.
 
-use core::{ptr, time::Duration};
+use core::time::Duration;
 use zeroize::Zeroize;
 
 use crate::{
@@ -412,7 +412,7 @@ impl Responder {
 
     // Securely erases sensitive data in the responder's memory.
     //
-    // Volatile-writes zeros over the handshake key (`k`), the chaining key (`ck`) and the handshake
+    // Zeroizes the handshake key (`k`), the chaining key (`ck`) and the handshake
     // hash (`h`), and non-securely erases the ephemeral, static and authority keypairs. This
     // function is typically called when the [`Responder`] instance is no longer needed or before
     // deallocation.
@@ -421,18 +421,9 @@ impl Responder {
     // zeroize-on-drop. Nor does it reach the transport session ciphers, which by then live in the
     // [`NoiseEngine`] returned by [`Self::step_1`] and are wiped when that is dropped.
     fn erase(&mut self) {
-        if let Some(k) = self.k.as_mut() {
-            for b in k {
-                unsafe { ptr::write_volatile(b, 0) };
-            }
-            self.k = None;
-        }
-        for b in &mut self.ck {
-            unsafe { ptr::write_volatile(b, 0) };
-        }
-        for b in &mut self.h {
-            unsafe { ptr::write_volatile(b, 0) };
-        }
+        self.k.zeroize();
+        self.ck.zeroize();
+        self.h.zeroize();
         self.e.non_secure_erase();
         self.s.non_secure_erase();
         self.a.non_secure_erase();

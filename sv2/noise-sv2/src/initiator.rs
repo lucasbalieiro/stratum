@@ -38,7 +38,7 @@ use alloc::{
     boxed::Box,
     string::{String, ToString},
 };
-use core::{convert::TryInto, ptr};
+use core::convert::TryInto;
 use zeroize::Zeroize;
 
 use crate::{
@@ -395,7 +395,7 @@ impl Initiator {
 
     // Securely erases sensitive data from the [`Initiator`] memory.
     //
-    // Volatile-writes zeros over the handshake key (`k`), the chaining key (`ck`) and the handshake
+    // Zeroizes the handshake key (`k`), the chaining key (`ck`) and the handshake
     // hash (`h`), and non-securely erases the ephemeral keypair. This method is typically called
     // when the [`Initiator`] instance is no longer needed or before deallocation.
     //
@@ -403,18 +403,9 @@ impl Initiator {
     // zeroize-on-drop. Nor does it reach the transport session ciphers, which by then live in the
     // [`NoiseEngine`] returned by [`Self::step_2`] and are wiped when that is dropped.
     fn erase(&mut self) {
-        if let Some(k) = self.k.as_mut() {
-            for b in k {
-                unsafe { ptr::write_volatile(b, 0) };
-            }
-            self.k = None;
-        }
-        for b in &mut self.ck {
-            unsafe { ptr::write_volatile(b, 0) };
-        }
-        for b in &mut self.h {
-            unsafe { ptr::write_volatile(b, 0) };
-        }
+        self.k.zeroize();
+        self.ck.zeroize();
+        self.h.zeroize();
         self.e.non_secure_erase();
     }
 }
