@@ -7,14 +7,27 @@ use core::{convert::TryInto, fmt};
 ///
 /// Upon validating a new best block, the upstream **must** immediately send this message.
 ///
-/// If a [`crate::NewTemplate`] message has previously been sent with the
-/// [`crate::NewTemplate::future_template`] flag set, the [`SetNewPrevHash::template_id`] field
-/// **should** be set to the [`crate::NewTemplate::template_id`].
+/// Prior to that, the upstream **must** have sent at least one, but potentially multiple,
+/// [`crate::NewTemplate`] messages with the [`crate::NewTemplate::future_template`] flag set. A
+/// downstream should keep track of all of them, and convert them into `NewMiningJob` or
+/// `NewExtendedMiningJob` messages with an empty `min_ntime`, in case it is also acting as a
+/// server under the Mining Protocol.
+///
+/// [`SetNewPrevHash::template_id`] identifies which of those future templates is now valid to
+/// mine on, given the [`SetNewPrevHash::prev_hash`] carried here. Once it has been activated,
+/// the remaining future templates can be discarded, leaving room for the future templates
+/// relative to the next `SetNewPrevHash`.
+///
+/// Note the ordering requirement is on the upstream: receiving this message with no future
+/// template queued means the peer is not conforming to the protocol, not that the
+/// [`SetNewPrevHash::template_id`] is optional.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SetNewPrevHash<'decoder> {
     /// Identifier of the template to mine on.
     ///
-    /// This must be identical to previously sent [`crate::NewTemplate`] message.
+    /// References a [`crate::NewTemplate`] previously sent with the
+    /// [`crate::NewTemplate::future_template`] flag set: the one that is now valid for
+    /// [`SetNewPrevHash::prev_hash`].
     pub template_id: u64,
     /// Previous block’s hash, as it must appear in the next block’s header.
     pub prev_hash: U256<'decoder>,
