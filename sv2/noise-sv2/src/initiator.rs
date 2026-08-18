@@ -276,6 +276,9 @@ impl Initiator {
     /// for secure communication. If the provided `message` has an incorrect length, it returns an
     /// [`Error::InvalidMessageLength`]. If decryption or signature verification fails, it returns
     /// an [`Error::InvalidCertificate`].
+    ///
+    /// On success the remaining handshake secrets, including the ephemeral keypair, are erased,
+    /// so the [`Initiator`] cannot be used for another handshake.
     #[cfg(feature = "std")]
     pub fn step_2(
         &mut self,
@@ -383,6 +386,7 @@ impl Initiator {
                 encryptor,
                 decryptor,
             };
+            self.erase();
             Ok(engine)
         } else {
             Err(Error::InvalidCertificate(plaintext.into()))
@@ -468,5 +472,25 @@ mod test {
 
         let res = initiator.step_2(msg1);
         assert!(res.is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[cfg_attr(miri, ignore)]
+    fn initiator_step_2_erases_handshake_secrets() {
+        use crate::Responder;
+
+        let authority_kp = Responder::generate_key();
+        let mut responder = Responder::new(authority_kp, 60);
+        let mut initiator = Initiator::without_pk().unwrap();
+        let ephemeral_before = initiator.e.secret_key().secret_bytes();
+
+        let msg0 = initiator.step_0().unwrap();
+        let (msg1, _) = responder.step_1(msg0).unwrap();
+        let _engine = initiator.step_2(msg1).unwrap();
+
+        assert_ne!(initiator.e.secret_key().secret_bytes(), ephemeral_before);
+        assert_eq!(initiator.ck, [0u8; 32]);
+        assert_eq!(initiator.h, [0u8; 32]);
     }
 }

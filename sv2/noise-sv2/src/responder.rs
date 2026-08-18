@@ -246,6 +246,9 @@ impl Responder {
     ///
     /// On failure, the method returns an error if there is an issue during encryption, decryption,
     /// or any other step of the handshake process.
+    ///
+    /// On success the remaining handshake secrets, including the ephemeral, static and authority
+    /// keypairs, are erased, so the [`Responder`] cannot be used for another handshake.
     #[cfg(feature = "std")]
     pub fn step_1(
         &mut self,
@@ -371,6 +374,7 @@ impl Responder {
             encryptor,
             decryptor,
         };
+        self.erase();
         Ok((to_send, engine))
     }
 
@@ -515,5 +519,29 @@ mod test {
         data[0] ^= 0x01;
 
         assert!(engine.decrypt(&mut data).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[cfg_attr(miri, ignore)]
+    fn responder_step_1_erases_handshake_secrets() {
+        use rand::{rngs::StdRng, SeedableRng};
+        use secp256k1::ellswift::ElligatorSwift;
+
+        let mut rng = StdRng::seed_from_u64(3);
+        let mut responder = make_responder();
+        let authority_before = responder.a.secret_key().secret_bytes();
+        let static_before = responder.s.secret_key().secret_bytes();
+        let fake_initiator_ephemeral =
+            ElligatorSwift::from_pubkey(responder.e.public_key()).to_array();
+
+        let _ = responder
+            .step_1_with_now_rng(fake_initiator_ephemeral, 100, &mut rng)
+            .unwrap();
+
+        assert_ne!(responder.a.secret_key().secret_bytes(), authority_before);
+        assert_ne!(responder.s.secret_key().secret_bytes(), static_before);
+        assert_eq!(responder.ck, [0u8; 32]);
+        assert_eq!(responder.h, [0u8; 32]);
     }
 }
