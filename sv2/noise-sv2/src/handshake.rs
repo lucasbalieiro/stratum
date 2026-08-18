@@ -184,7 +184,11 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
     fn hkdf_2(chaining_key: &[u8; 32], input_key_material: &[u8]) -> ([u8; 32], [u8; 32]) {
         let mut temp_key = Self::hmac_hash(chaining_key, input_key_material);
         let out_1 = Self::hmac_hash(&temp_key, &[0x1]);
-        let out_2 = Self::hmac_hash(&temp_key, &[&out_1[..], &[0x2][..]].concat());
+        let mut in_2 = [0u8; 33];
+        in_2[..32].copy_from_slice(&out_1);
+        in_2[32] = 0x2;
+        let out_2 = Self::hmac_hash(&temp_key, &in_2);
+        in_2.zeroize();
         // Both outputs are recoverable from the pseudorandom key, so it must not outlive them.
         temp_key.zeroize();
         (out_1, out_2)
@@ -197,8 +201,14 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
     ) -> ([u8; 32], [u8; 32], [u8; 32]) {
         let mut temp_key = Self::hmac_hash(chaining_key, input_key_material);
         let out_1 = Self::hmac_hash(&temp_key, &[0x1]);
-        let out_2 = Self::hmac_hash(&temp_key, &[&out_1[..], &[0x2][..]].concat());
-        let out_3 = Self::hmac_hash(&temp_key, &[&out_2[..], &[0x3][..]].concat());
+        let mut in_n = [0u8; 33];
+        in_n[..32].copy_from_slice(&out_1);
+        in_n[32] = 0x2;
+        let out_2 = Self::hmac_hash(&temp_key, &in_n);
+        in_n[..32].copy_from_slice(&out_2);
+        in_n[32] = 0x3;
+        let out_3 = Self::hmac_hash(&temp_key, &in_n);
+        in_n.zeroize();
         temp_key.zeroize();
         (out_1, out_2, out_3)
     }
