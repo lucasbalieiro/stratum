@@ -587,6 +587,7 @@ impl_into_encodable_field_for_borrowed_seq!(u64);
 impl_into_encodable_field_for_borrowed_seq!(U256<'a>);
 impl_into_encodable_field_for_borrowed_seq!(Mac<'a>);
 impl_into_encodable_field_for_borrowed_seq!(Signature<'a>);
+impl_into_encodable_field_for_borrowed_seq!(B032<'a>);
 impl_into_encodable_field_for_borrowed_seq!(B0255<'a>);
 impl_into_encodable_field_for_borrowed_seq!(B064K<'a>);
 impl_into_encodable_field_for_borrowed_seq!(B016M<'a>);
@@ -600,6 +601,7 @@ impl_into_encodable_field_for_owned_seq!(u64);
 impl_into_encodable_field_for_owned_seq!(U256Owned);
 impl_into_encodable_field_for_owned_seq!(MacOwned);
 impl_into_encodable_field_for_owned_seq!(SignatureOwned);
+impl_into_encodable_field_for_owned_seq!(B032Owned);
 impl_into_encodable_field_for_owned_seq!(B0255Owned);
 impl_into_encodable_field_for_owned_seq!(B064KOwned);
 impl_into_encodable_field_for_owned_seq!(B016MOwned);
@@ -830,6 +832,16 @@ impl<T: GetSize> GetSize for Sv2OptionOwned<T> {
 #[cfg(test)]
 mod test {
     use crate::{Decodable, Seq064K};
+
+    #[test]
+    fn seq_of_b032_encodes() {
+        use crate::{B032Owned, EncodableField, Seq0255Owned};
+
+        let item = B032Owned::try_from(alloc::vec![0x42u8; 32]).unwrap();
+        let seq = Seq0255Owned::new(alloc::vec![item]).unwrap();
+        let encodable: EncodableField = seq.into();
+        assert!(matches!(encodable, EncodableField::Struct(_)));
+    }
 
     #[test]
     fn get_structure_does_not_overallocate_from_tiny_header() {
