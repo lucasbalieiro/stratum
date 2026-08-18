@@ -27,6 +27,7 @@ use bitcoin::{
     transaction::Version,
     CompactTarget, OutPoint, Sequence, Target, Transaction, TxIn, TxOut, Witness,
 };
+use core::num::NonZeroUsize;
 use mining_sv2::{
     NewExtendedMiningJobOwned, SetCustomMiningJobOwned, SetCustomMiningJobSuccess,
     SetNewPrevHashOwned as SetNewPrevHashMp, SubmitSharesExtendedOwned,
@@ -88,12 +89,19 @@ pub struct ExtendedChannel {
     past_job_order: VecDeque<u32>,
     // stale jobs are indexed with job_id (u32)
     stale_jobs: HashMap<u32, ExtendedJob>,
+    // Cap on `past_jobs` under the current chain tip, resolved from the constructor's
+    // `Option<NonZeroUsize>` against `MAX_PAST_JOBS`.
+    max_past_jobs: usize,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
 }
 
 impl ExtendedChannel {
     /// Constructs a new [`ExtendedChannel`].
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
+    /// [`MAX_PAST_JOBS`].
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_id: u32,
         user_identity: String,
@@ -102,6 +110,7 @@ impl ExtendedChannel {
         nominal_hashrate: f32,
         version_rolling: bool,
         rollable_extranonce_size: u16,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Self {
         Self {
             channel_id,
@@ -117,6 +126,9 @@ impl ExtendedChannel {
             past_jobs: HashMap::new(),
             past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
+            max_past_jobs: max_past_jobs
+                .map(NonZeroUsize::get)
+                .unwrap_or(MAX_PAST_JOBS),
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
         }
@@ -499,7 +511,7 @@ impl ExtendedChannel {
         self.past_job_order.retain(|id| *id != job_id);
         self.past_job_order.push_back(job_id);
 
-        if self.past_jobs.len() > MAX_PAST_JOBS {
+        if self.past_jobs.len() > self.max_past_jobs {
             if let Some(evicted_job_id) = self.past_job_order.pop_front() {
                 self.past_jobs.remove(&evicted_job_id);
             }
@@ -825,6 +837,7 @@ mod tests {
     };
     use binary_sv2::Sv2OptionOwned as Sv2Option;
     use bitcoin::Target;
+    use core::num::NonZeroUsize;
     use mining_sv2::{
         NewExtendedMiningJobOwned as NewExtendedMiningJob, SetNewPrevHashOwned as SetNewPrevHashMp,
         SubmitSharesExtendedOwned as SubmitSharesExtended,
@@ -854,6 +867,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -935,6 +949,7 @@ mod tests {
             1.0,
             true,
             4u16,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -995,6 +1010,7 @@ mod tests {
             1.0,
             true,
             4u16,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1074,6 +1090,7 @@ mod tests {
             1.0,
             true,
             4u16,
+            None,
         );
 
         let active_job = NewExtendedMiningJob {
@@ -1119,6 +1136,73 @@ mod tests {
     }
 
     #[test]
+    fn test_past_jobs_honour_constructor_override() {
+        // Some(cap) must override MAX_PAST_JOBS all the way through to the eviction path.
+        let custom_cap = NonZeroUsize::new(3).unwrap();
+        assert!(custom_cap.get() < MAX_PAST_JOBS);
+
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            4u16,
+            Some(custom_cap),
+        );
+
+        let active_job = NewExtendedMiningJob {
+            channel_id,
+            job_id: 0,
+            min_ntime: Sv2Option::new(Some(1746839905)),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let job_count = 20u32;
+        for job_id in 0..job_count {
+            let mut job = active_job.clone();
+            job.job_id = job_id;
+            channel.on_new_extended_mining_job(job).unwrap();
+        }
+
+        // bounded by the override, not by MAX_PAST_JOBS
+        assert_eq!(channel.get_past_jobs_count(), custom_cap.get());
+
+        // the last job is active; only the newest `custom_cap` retired jobs survive
+        for job_id in 0..job_count - 1 - custom_cap.get() as u32 {
+            assert!(channel.get_past_job(job_id).is_none());
+        }
+        for job_id in job_count - 1 - custom_cap.get() as u32..job_count - 1 {
+            assert!(channel.get_past_job(job_id).is_some());
+        }
+    }
+
+    #[test]
     fn test_past_jobs_flow() {
         let channel_id = 1;
         let user_identity = "user_identity".to_string();
@@ -1140,6 +1224,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let ntime: u32 = 1746839905;
@@ -1221,6 +1306,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1320,6 +1406,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1409,6 +1496,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1504,6 +1592,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1612,6 +1701,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1708,6 +1798,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1818,6 +1909,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -1908,6 +2000,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -2007,6 +2100,7 @@ mod tests {
             nominal_hashrate,
             version_rolling,
             rollable_extranonce_size,
+            None,
         );
 
         let future_job = NewExtendedMiningJob {
@@ -2103,6 +2197,7 @@ mod tests {
             1.0,
             true,
             8u16,
+            None,
         );
 
         // a non-future job is activated immediately
@@ -2168,6 +2263,7 @@ mod tests {
             1.0,
             true,
             8u16,
+            None,
         );
 
         let job_template = NewExtendedMiningJob {
@@ -2259,6 +2355,7 @@ mod tests {
             1.0,
             true,
             8u16,
+            None,
         );
 
         let job_template = NewExtendedMiningJob {
@@ -2380,6 +2477,7 @@ mod tests {
             1.0,
             true,
             8u16,
+            None,
         );
 
         let job = |job_id: u32, min_ntime: Option<u32>| NewExtendedMiningJob {
@@ -2472,6 +2570,7 @@ mod tests {
             1.0,
             true,
             8u16,
+            None,
         );
 
         channel

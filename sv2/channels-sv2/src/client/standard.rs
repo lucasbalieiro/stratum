@@ -24,6 +24,7 @@ use bitcoin::{
     hashes::sha256d::Hash,
     CompactTarget, Target,
 };
+use core::num::NonZeroUsize;
 use mining_sv2::{
     NewExtendedMiningJobOwned, NewMiningJobOwned, SetNewPrevHashOwned as SetNewPrevHashMp,
     SubmitSharesStandardOwned, ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
@@ -68,18 +69,25 @@ pub struct StandardChannel {
     // Replaced IDs move to the back; overflow evicts from the front.
     past_job_order: VecDeque<u32>,
     stale_jobs: HashMap<u32, StandardJob>,
+    // Cap on `past_jobs` under the current chain tip, resolved from the constructor's
+    // `Option<NonZeroUsize>` against `MAX_PAST_JOBS`.
+    max_past_jobs: usize,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
 }
 
 impl StandardChannel {
     /// Creates a new [`StandardChannel`] instance with provided channel parameters.
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
+    /// [`MAX_PAST_JOBS`].
     pub fn new(
         channel_id: u32,
         user_identity: String,
         extranonce_prefix: ExtranoncePrefix,
         target: Target,
         nominal_hashrate: f32,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Self {
         Self {
             channel_id,
@@ -93,6 +101,9 @@ impl StandardChannel {
             past_jobs: HashMap::new(),
             past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
+            max_past_jobs: max_past_jobs
+                .map(NonZeroUsize::get)
+                .unwrap_or(MAX_PAST_JOBS),
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
         }
@@ -313,7 +324,7 @@ impl StandardChannel {
         self.past_job_order.retain(|id| *id != job_id);
         self.past_job_order.push_back(job_id);
 
-        if self.past_jobs.len() > MAX_PAST_JOBS {
+        if self.past_jobs.len() > self.max_past_jobs {
             if let Some(evicted_job_id) = self.past_job_order.pop_front() {
                 self.past_jobs.remove(&evicted_job_id);
             }
@@ -604,6 +615,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -664,6 +676,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -710,6 +723,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -773,6 +787,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let active_job = NewMiningJob {
@@ -823,6 +838,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let ntime: u32 = 1746839905;
@@ -877,6 +893,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -957,6 +974,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1027,6 +1045,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1103,6 +1122,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1174,6 +1194,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1255,6 +1276,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1335,6 +1357,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1414,6 +1437,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let merkle_root = [
@@ -1495,6 +1519,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let merkle_root = [
@@ -1565,6 +1590,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let merkle_root = [
@@ -1650,6 +1676,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let malformed_job = NewExtendedMiningJob {
@@ -1692,6 +1719,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         channel.on_new_mining_job(NewMiningJob {

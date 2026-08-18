@@ -33,6 +33,10 @@ pub const MAX_FUTURE_JOBS: usize = 16;
 /// 50 matches the server-side cap, so a proxy's client channel never evicts a job its upstream
 /// still accepts, and buys ample headroom over the reachable submit depth of ~1-2 past jobs at a
 /// small measured memory cost — see the load-test data in PR #2290.
+///
+/// This is only the default. The cap is really a retention window — `cap / job rate` — and the
+/// job rate belongs to the deployment, so channel constructors take a
+/// `max_past_jobs: Option<NonZeroUsize>` and fall back to this value when passed `None`.
 pub const MAX_PAST_JOBS: usize = 50;
 
 /// Maximum number of accepted-share hashes a client channel retains for duplicate detection.

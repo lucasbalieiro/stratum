@@ -39,7 +39,10 @@ use crate::{
     server::{
         error::StandardChannelError,
         jobs::{
-            extended::ExtendedJob, factory::JobFactory, job_store::JobStore, standard::StandardJob,
+            extended::ExtendedJob,
+            factory::JobFactory,
+            job_store::{JobStore, MAX_PAST_JOBS},
+            standard::StandardJob,
         },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
@@ -65,7 +68,7 @@ use mining_sv2::{
     ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE, ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
     ERROR_CODE_UPDATE_CHANNEL_INVALID_NOMINAL_HASHRATE,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 use template_distribution_sv2::{NewTemplateOwned, SetNewPrevHashOwned as SetNewPrevHash};
 use tracing::{debug, warn};
 
@@ -117,6 +120,9 @@ impl StandardChannel {
     /// Returns [`StandardChannelError::ScriptSigSizeTooLarge`] if the tags, the delimiters, the
     /// extranonce prefix and a worst-case coinbase prefix do not fit within the coinbase
     /// `scriptSig` budget, see [`JobFactory::fits_script_sig_budget`].
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
+    /// the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_pool(
         channel_id: u32,
@@ -127,6 +133,7 @@ impl StandardChannel {
         share_batch_size: usize,
         expected_share_per_minute: f32,
         pool_tag_string: String,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Result<Self, StandardChannelError> {
         Self::new(
             channel_id,
@@ -138,6 +145,7 @@ impl StandardChannel {
             expected_share_per_minute,
             Some(pool_tag_string),
             None,
+            max_past_jobs,
         )
     }
 
@@ -155,6 +163,9 @@ impl StandardChannel {
     /// Returns [`StandardChannelError::ScriptSigSizeTooLarge`] if the tags, the delimiters, the
     /// extranonce prefix and a worst-case coinbase prefix do not fit within the coinbase
     /// `scriptSig` budget, see [`JobFactory::fits_script_sig_budget`].
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
+    /// the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_job_declaration_client(
         channel_id: u32,
@@ -166,6 +177,7 @@ impl StandardChannel {
         expected_share_per_minute: f32,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Result<Self, StandardChannelError> {
         Self::new(
             channel_id,
@@ -177,6 +189,7 @@ impl StandardChannel {
             expected_share_per_minute,
             pool_tag_string,
             Some(miner_tag_string),
+            max_past_jobs,
         )
     }
 
@@ -192,6 +205,7 @@ impl StandardChannel {
         expected_share_per_minute: f32,
         pool_tag_string: Option<String>,
         miner_tag_string: Option<String>,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Result<Self, StandardChannelError> {
         let calculated_target =
             match hash_rate_to_target(nominal_hashrate.into(), expected_share_per_minute.into()) {
@@ -235,7 +249,11 @@ impl StandardChannel {
                 crate::seen_shares_budget(expected_share_per_minute as f64),
             ),
             expected_share_per_minute,
-            job_store: JobStore::new(),
+            job_store: JobStore::new(
+                max_past_jobs
+                    .map(NonZeroUsize::get)
+                    .unwrap_or(MAX_PAST_JOBS),
+            ),
             job_factory,
             chain_tip: None,
         })
@@ -923,6 +941,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1046,6 +1065,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1144,6 +1164,7 @@ mod tests {
             nominal_hashrate,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1265,6 +1286,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1366,6 +1388,7 @@ mod tests {
             nominal_hashrate,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1500,6 +1523,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1611,6 +1635,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1715,6 +1740,7 @@ mod tests {
             nominal_hashrate,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1829,6 +1855,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1932,6 +1959,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1962,6 +1990,7 @@ mod tests {
             100,
             1.0,
             Some("x".repeat(pool_tag_len)),
+            None,
             None,
         )
     }
@@ -2071,6 +2100,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2153,6 +2183,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2211,6 +2242,7 @@ mod tests {
             nominal_hashrate,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -2347,6 +2379,7 @@ mod tests {
             100,
             1.0,
             String::new(),
+            None,
         )
         .unwrap();
 
@@ -2433,6 +2466,7 @@ mod tests {
             1.0,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2506,6 +2540,7 @@ mod tests {
             10.0,
             100,
             1.0,
+            None,
             None,
             None,
         )
@@ -2593,6 +2628,7 @@ mod tests {
             1_000.0,
             100,
             1.0,
+            None,
             None,
             None,
         )
@@ -2689,6 +2725,7 @@ mod tests {
             1_000.0,
             100,
             expected_share_per_minute,
+            None,
             None,
             None,
         )

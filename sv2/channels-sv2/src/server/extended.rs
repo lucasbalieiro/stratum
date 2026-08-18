@@ -46,7 +46,12 @@ use crate::{
     merkle_root::merkle_root_from_path,
     server::{
         error::ExtendedChannelError,
-        jobs::{extended::ExtendedJob, factory::JobFactory, job_store::JobStore, JobOrigin},
+        jobs::{
+            extended::ExtendedJob,
+            factory::JobFactory,
+            job_store::{JobStore, MAX_PAST_JOBS},
+            JobOrigin,
+        },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
     target::{bytes_to_hex, hash_rate_to_target, u256_to_block_hash},
@@ -67,7 +72,7 @@ use mining_sv2::{
     ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE, ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
     ERROR_CODE_UPDATE_CHANNEL_INVALID_NOMINAL_HASHRATE, ERROR_CODE_VERSION_ROLLING_NOT_ALLOWED,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 use template_distribution_sv2::{NewTemplateOwned, SetNewPrevHashOwned as SetNewPrevHashTdp};
 use tracing::debug;
 
@@ -122,6 +127,9 @@ impl ExtendedChannel {
     /// Returns [`ExtendedChannelError::ScriptSigSizeTooLarge`] if the tags, the delimiters, the
     /// full extranonce and a worst-case coinbase prefix do not fit within the coinbase `scriptSig`
     /// budget, see [`JobFactory::fits_script_sig_budget`].
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
+    /// the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_pool(
         channel_id: u32,
@@ -134,6 +142,7 @@ impl ExtendedChannel {
         share_batch_size: usize,
         expected_share_per_minute: f32,
         pool_tag_string: String,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Result<Self, ExtendedChannelError> {
         Self::new(
             channel_id,
@@ -147,6 +156,7 @@ impl ExtendedChannel {
             expected_share_per_minute,
             Some(pool_tag_string),
             None,
+            max_past_jobs,
         )
     }
 
@@ -164,6 +174,9 @@ impl ExtendedChannel {
     /// Returns [`ExtendedChannelError::ScriptSigSizeTooLarge`] if the tags, the delimiters, the
     /// full extranonce and a worst-case coinbase prefix do not fit within the coinbase `scriptSig`
     /// budget, see [`JobFactory::fits_script_sig_budget`].
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
+    /// the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_job_declaration_client(
         channel_id: u32,
@@ -177,6 +190,7 @@ impl ExtendedChannel {
         expected_share_per_minute: f32,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Result<Self, ExtendedChannelError> {
         Self::new(
             channel_id,
@@ -190,6 +204,7 @@ impl ExtendedChannel {
             expected_share_per_minute,
             pool_tag_string,
             Some(miner_tag_string),
+            max_past_jobs,
         )
     }
 
@@ -207,6 +222,7 @@ impl ExtendedChannel {
         expected_share_per_minute: f32,
         pool_tag: Option<String>,
         miner_tag: Option<String>,
+        max_past_jobs: Option<NonZeroUsize>,
     ) -> Result<Self, ExtendedChannelError> {
         let target =
             match hash_rate_to_target(nominal_hashrate.into(), expected_share_per_minute.into()) {
@@ -247,7 +263,11 @@ impl ExtendedChannel {
             job_id_to_target: HashMap::new(),
             nominal_hashrate,
             stable_hashrate: false,
-            job_store: JobStore::new(),
+            job_store: JobStore::new(
+                max_past_jobs
+                    .map(NonZeroUsize::get)
+                    .unwrap_or(MAX_PAST_JOBS),
+            ),
             job_factory,
             share_accounting: ShareAccounting::new(
                 share_batch_size,
@@ -1045,6 +1065,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1190,6 +1211,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1309,6 +1331,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1383,6 +1406,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1502,6 +1526,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1599,6 +1624,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1715,6 +1741,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1841,6 +1868,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1873,6 +1901,7 @@ mod tests {
             100,
             1.0,
             Some("x".repeat(pool_tag_len)),
+            None,
             None,
         )
     }
@@ -1988,6 +2017,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2071,6 +2101,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2135,6 +2166,7 @@ mod tests {
             100,
             1.0,
             String::new(),
+            None,
         )
         .unwrap();
 
@@ -2333,6 +2365,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2437,6 +2470,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2538,6 +2572,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2614,6 +2649,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -2725,6 +2761,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2795,6 +2832,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2834,6 +2872,7 @@ mod tests {
             8u16,
             100,
             1.0,
+            None,
             None,
             None,
         )
@@ -2909,6 +2948,7 @@ mod tests {
             100,
             1.0,
             String::new(),
+            None,
         )
         .unwrap();
 
@@ -3021,6 +3061,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -3143,6 +3184,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3247,6 +3289,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -3373,6 +3416,7 @@ mod tests {
             1.0,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3447,6 +3491,7 @@ mod tests {
             4u16,
             100,
             1.0,
+            None,
             None,
             None,
         )
@@ -3535,6 +3580,7 @@ mod tests {
             8u16,
             100,
             1.0,
+            None,
             None,
             None,
         )

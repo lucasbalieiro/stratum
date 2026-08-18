@@ -34,7 +34,11 @@ use crate::{
     chain_tip::ChainTip,
     server::{
         error::GroupChannelError,
-        jobs::{extended::ExtendedJob, factory::JobFactory, job_store::JobStore},
+        jobs::{
+            extended::ExtendedJob,
+            factory::JobFactory,
+            job_store::{JobStore, MAX_PAST_JOBS},
+        },
     },
 };
 use bitcoin::transaction::TxOut;
@@ -143,7 +147,10 @@ impl GroupChannel {
             group_channel_id,
             channel_ids: HashSet::new(),
             job_factory,
-            job_store: JobStore::new(),
+            // group channels never validate shares, so they replace the active job rather than
+            // retiring it into past jobs (see `JobStore::replace_active_job`). The cap is
+            // therefore inert here and needs no constructor parameter.
+            job_store: JobStore::new(MAX_PAST_JOBS),
             chain_tip: None,
             full_extranonce_size,
         })
