@@ -462,6 +462,9 @@ impl ExtendedChannel {
     }
 
     /// Returns a reference to a past job from its job ID, if any.
+    ///
+    /// At most `MAX_PAST_JOBS` past jobs are kept under the current chain tip (oldest
+    /// evicted first).
     pub fn get_past_job(&self, job_id: u32) -> Option<&ExtendedJob> {
         self.job_store.get_past_job(job_id)
     }
@@ -472,8 +475,12 @@ impl ExtendedChannel {
 
     /// Updates the channel state with a new template.
     ///
-    /// If the template is a future template, the chain tip is not used.
-    /// If the template is not a future template, the chain tip must be set.
+    /// If the template is a future template, the chain tip is not used. At most
+    /// `MAX_FUTURE_JOBS` (16) future jobs are kept: storing a new one beyond that limit evicts
+    /// the oldest.
+    /// If the template is not a future template, the chain tip must be set, and the previous
+    /// active job (if any) moves to past jobs, of which at most `MAX_PAST_JOBS` are kept
+    /// (oldest evicted first).
     ///
     /// Only meant for usage on a Sv2 Pool Server or a Sv2 Job Declaration Client,
     /// but not on mining clients such as Mining Devices or Proxies.
@@ -528,8 +535,11 @@ impl ExtendedChannel {
                         self.job_id_to_target
                             .insert(new_job.get_job_id(), self.target);
 
-                        // add the new active job to the job store
-                        self.job_store.add_active_job(new_job);
+                        // add the new active job to the job store, dropping the evicted past
+                        // job's target mapping (its shares degrade to InvalidJobId)
+                        if let Some(evicted_job_id) = self.job_store.add_active_job(new_job) {
+                            self.job_id_to_target.remove(&evicted_job_id);
+                        }
                     }
                 }
             }
@@ -566,7 +576,11 @@ impl ExtendedChannel {
             false => {
                 self.job_id_to_target
                     .insert(extended_job.get_job_id(), self.target);
-                self.job_store.add_active_job(extended_job);
+                // dropping the evicted past job's target mapping (its shares degrade to
+                // InvalidJobId)
+                if let Some(evicted_job_id) = self.job_store.add_active_job(extended_job) {
+                    self.job_id_to_target.remove(&evicted_job_id);
+                }
             }
         }
 
@@ -635,8 +649,10 @@ impl ExtendedChannel {
 
     /// Updates the channel state with a new custom mining job.
     ///
-    /// If there is an active job, it is moved to the past jobs.
-    /// The new custom mining job is then set as the active job.
+    /// Under the same chain tip, the previously active job is moved to the past jobs; at most
+    /// `MAX_PAST_JOBS` past jobs are kept, retiring one beyond that limit evicts the
+    /// oldest. On a chain tip change, the previously active job and all past jobs go stale
+    /// instead. The new custom mining job is then set as the active job.
     ///
     /// Assumes SetCustomMiningJob.{prev_hash, nbits, min_ntime} have already been validated.
     /// Updates the channel's `ChainTip``.
@@ -671,12 +687,20 @@ impl ExtendedChannel {
 
         let job_id = new_job.get_job_id();
 
-        self.job_store.add_active_job(new_job);
-
         if is_new_chain_tip {
+            // tip transition: the displaced active job goes stale together with the past set,
+            // bypassing the MAX_PAST_JOBS cap — retiring it through the capped path would push
+            // the oldest past job out of the stale set, misclassifying its late shares as
+            // InvalidJobId instead of Stale
+            self.job_store.deactivate_job();
             self.job_store.mark_past_jobs_as_stale();
             self.share_accounting.flush_seen_shares();
             self.job_id_to_target.clear();
+        }
+
+        // dropping the evicted past job's target mapping (its shares degrade to InvalidJobId)
+        if let Some(evicted_job_id) = self.job_store.add_active_job(new_job) {
+            self.job_id_to_target.remove(&evicted_job_id);
         }
 
         // update the chain tip
@@ -942,6 +966,7 @@ mod tests {
             jobs::{
                 extended::ExtendedJob,
                 factory::{MAX_COINBASE_PREFIX_SIZE, MAX_SCRIPT_SIG_SIZE},
+                job_store::{MAX_FUTURE_JOBS, MAX_PAST_JOBS},
             },
             share_accounting::{ShareValidationError, ShareValidationResult},
         },
@@ -2203,6 +2228,60 @@ mod tests {
     }
 
     #[test]
+    fn test_retired_extranonce_prefix_released_after_job_eviction() {
+        // Eviction counterpart of the test above: when the last job created under a
+        // rotated-out prefix is evicted from past jobs, the prefix's slot must be released
+        // right away — a peer withholding the next chain transition must not be able to pin
+        // allocator slots.
+        let (mut allocator, mut channel, _prefix_1_bytes, job_id) =
+            extended_channel_with_rotated_extranonce_prefix();
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0];
+        script_bytes.push(20);
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // flood enough non-future templates to push the pre-rotation job out of past jobs
+        for template_id in 2..2 + MAX_PAST_JOBS as u64 + 2 {
+            let template = NewTemplate {
+                template_id,
+                future_template: false,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![82, 0].try_into().unwrap(),
+                coinbase_tx_input_sequence: 4294967295,
+                coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+                coinbase_tx_outputs_count: 1,
+                coinbase_tx_outputs: vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113,
+                    209, 222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153,
+                    98, 180, 139, 235, 216, 54, 151, 78, 140, 249,
+                ]
+                .try_into()
+                .unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+            channel
+                .on_new_template(template, coinbase_reward_outputs.clone())
+                .unwrap();
+        }
+        assert!(channel.get_past_job(job_id).is_none());
+
+        // the evicted job was the last reference to the rotated-out prefix, so its slot is
+        // free again
+        assert_eq!(allocator.allocated_count(), 1);
+        assert!(allocator.allocate_extended(8).is_ok());
+    }
+
+    #[test]
     fn test_on_group_channel_job_assigns_extranonce_prefix_to_future_job() {
         // Test that on_group_channel_job assigns the channel's extranonce prefix
         // to a future job that came from a group channel (with empty prefix)
@@ -2712,6 +2791,184 @@ mod tests {
     }
 
     #[test]
+    fn test_set_custom_mining_job_chain_tip_change_keeps_all_past_jobs_in_stale_set() {
+        // At a tip transition the displaced active job and every retained past job must land
+        // in the stale set: with past jobs at the MAX_PAST_JOBS cap, a capped retirement of
+        // the displaced job would push the oldest past job out of the stale set,
+        // misclassifying its late shares as InvalidJobId instead of Stale.
+        let channel_id = 1;
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![1, 2, 3, 4]).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            100.0,
+            true,
+            8u16,
+            100,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let first_prev_hash = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ];
+        let second_prev_hash = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ];
+
+        // fill past jobs to the cap under the first tip, plus the active job
+        let mut same_tip_job_ids = Vec::new();
+        for request_id in 0..MAX_PAST_JOBS as u32 + 2 {
+            let job_id = channel
+                .on_set_custom_mining_job(custom_mining_job(
+                    channel_id,
+                    request_id,
+                    first_prev_hash,
+                    1745596910,
+                ))
+                .unwrap();
+            same_tip_job_ids.push(job_id);
+        }
+
+        // tip transition
+        channel
+            .on_set_custom_mining_job(custom_mining_job(
+                channel_id,
+                MAX_PAST_JOBS as u32 + 2,
+                second_prev_hash,
+                1745596970,
+            ))
+            .unwrap();
+
+        // the newest MAX_PAST_JOBS past jobs and the displaced active job are all stale
+        for job_id in same_tip_job_ids.iter().rev().take(MAX_PAST_JOBS + 1) {
+            assert!(channel.job_store.get_stale_job(*job_id).is_some());
+        }
+    }
+
+    #[test]
+    fn test_retired_extranonce_prefix_kept_through_future_job_activation() {
+        // Activating a future job created under a rotated-out prefix must not release that
+        // prefix's allocator slot, even when the activation's retirement of the displaced
+        // active job coincides with past jobs sitting at the MAX_PAST_JOBS cap. The activated
+        // job keeps validating shares under the old prefix bytes, so releasing the slot could
+        // hand the same extranonce space to a second live channel.
+        let total_extranonce_len = 32;
+        let max_channels = 2;
+        let min_rollable_size = 8;
+
+        let mut allocator =
+            ExtranonceAllocator::new(vec![], total_extranonce_len, max_channels).unwrap();
+
+        let prefix_1 = allocator.allocate_extended(min_rollable_size).unwrap();
+        let prefix_2 = allocator.allocate_extended(min_rollable_size).unwrap();
+        let prefix_1_bytes = prefix_1.as_bytes().to_vec();
+        let rollable_extranonce_size =
+            (total_extranonce_len as usize - prefix_1_bytes.len()) as u16;
+
+        let mut channel = ExtendedChannel::new_for_pool(
+            1,
+            "user_identity".to_string(),
+            prefix_1,
+            Target::from_le_bytes([0xff; 32]),
+            100.0,
+            true,
+            rollable_extranonce_size,
+            100,
+            1.0,
+            String::new(),
+        )
+        .unwrap();
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0];
+        script_bytes.push(20);
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        let template = |template_id: u64, future_template: bool| NewTemplate {
+            template_id,
+            future_template,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![82, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967295,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 0,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        // a future job created under the first prefix, which is then rotated out
+        channel
+            .on_new_template(template(100, true), coinbase_reward_outputs.clone())
+            .unwrap();
+        channel.set_extranonce_prefix(prefix_2).unwrap();
+
+        // fill past jobs to the cap with non-future jobs under the second prefix
+        let ntime = 1745596910;
+        let prev_hash = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        channel.set_chain_tip(ChainTip::new(prev_hash, 453040064, ntime));
+        for template_id in 0..MAX_PAST_JOBS as u64 + 2 {
+            channel
+                .on_new_template(
+                    template(template_id, false),
+                    coinbase_reward_outputs.clone(),
+                )
+                .unwrap();
+        }
+
+        // activate the future job created under the rotated-out prefix
+        let new_prev_hash = SetNewPrevHash {
+            template_id: 100,
+            prev_hash: [
+                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+            ]
+            .into(),
+            header_timestamp: ntime + 600,
+            n_bits: 453040064,
+            target: [0xff; 32].into(),
+        };
+        channel.on_set_new_prev_hash(new_prev_hash).unwrap();
+
+        // the active job validates shares under the rotated-out prefix bytes, so its
+        // allocator slot must still be reserved
+        assert_eq!(
+            channel.get_active_job().unwrap().get_extranonce_prefix(),
+            prefix_1_bytes.as_slice()
+        );
+        assert_eq!(allocator.allocated_count(), 2);
+        assert!(matches!(
+            allocator.allocate_extended(min_rollable_size),
+            Err(ExtranonceAllocatorError::CapacityExhausted)
+        ));
+    }
+
+    #[test]
     fn test_share_validation_version_rolling_not_allowed() {
         // when version rolling is not allowed on the channel,
         // the share version must match the job version exactly
@@ -3068,5 +3325,166 @@ mod tests {
             coinbase_tx_locktime: 0,
             merkle_path: vec![].try_into().unwrap(),
         }
+    }
+
+    #[test]
+    fn test_future_template_storage_is_bounded() {
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            4u16,
+            100,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let script = ScriptBuf::from(script_bytes);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: script,
+        }];
+
+        let flood_size = 10_000u64;
+        for template_id in 0..flood_size {
+            let template = NewTemplate {
+                template_id,
+                future_template: true,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![82, 0].try_into().unwrap(),
+                coinbase_tx_input_sequence: 4294967295,
+                coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+                coinbase_tx_outputs_count: 1,
+                coinbase_tx_outputs: vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113,
+                    209, 222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153,
+                    98, 180, 139, 235, 216, 54, 151, 78, 140, 249,
+                ]
+                .try_into()
+                .unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+
+            channel
+                .on_new_template(template, coinbase_reward_outputs.clone())
+                .unwrap();
+        }
+
+        // only the newest MAX_FUTURE_JOBS templates survive; the oldest were evicted
+        for template_id in 0..flood_size - MAX_FUTURE_JOBS as u64 {
+            assert!(channel
+                .get_future_job_id_from_template_id(template_id)
+                .is_none());
+        }
+        for template_id in flood_size - MAX_FUTURE_JOBS as u64..flood_size {
+            assert!(channel
+                .get_future_job_id_from_template_id(template_id)
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn test_past_job_storage_is_bounded() {
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            4u16,
+            100,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let ntime = 1747092633;
+        let prev_hash = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ]
+        .into();
+        let nbits = 503543726;
+        channel.set_chain_tip(ChainTip::new(prev_hash, nbits, ntime));
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let script = ScriptBuf::from(script_bytes);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: script,
+        }];
+
+        let flood_size = 10_000u64;
+        for template_id in 0..flood_size {
+            let template = NewTemplate {
+                template_id,
+                future_template: false,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![82, 0].try_into().unwrap(),
+                coinbase_tx_input_sequence: 4294967295,
+                coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+                coinbase_tx_outputs_count: 1,
+                coinbase_tx_outputs: vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113,
+                    209, 222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153,
+                    98, 180, 139, 235, 216, 54, 151, 78, 140, 249,
+                ]
+                .try_into()
+                .unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+
+            channel
+                .on_new_template(template, coinbase_reward_outputs.clone())
+                .unwrap();
+        }
+
+        // each non-future template retires the previous active job; only the newest
+        // MAX_PAST_JOBS retired jobs survive
+        let retained = (0..=flood_size as u32)
+            .filter(|job_id| channel.get_past_job(*job_id).is_some())
+            .count();
+        assert_eq!(retained, MAX_PAST_JOBS);
+        assert!(channel.get_active_job().is_some());
+
+        // target metadata must not outlive the jobs it belongs to: one entry for the active
+        // job plus one per retained past job
+        assert_eq!(channel.job_id_to_target.len(), MAX_PAST_JOBS + 1);
     }
 }
