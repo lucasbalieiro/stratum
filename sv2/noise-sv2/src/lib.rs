@@ -84,6 +84,10 @@ pub const INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE: usize = ELLSWIFT_ENCODING_S
     + ENCRYPTED_ELLSWIFT_ENCODING_SIZE
     + ENCRYPTED_SIGNATURE_NOISE_MESSAGE_SIZE;
 
+/// Certificate format version implemented by this crate. Certificates signed
+/// for any other version are rejected during verification.
+pub const CERTIFICATE_VERSION: u16 = 0;
+
 /// If protocolName is less than or equal to 32 bytes in length, use
 /// protocolName with zero bytes appended to make 32 bytes. Otherwise, apply
 /// HASH to it. For name = "Noise_NX_Secp256k1+EllSwift_ChaChaPoly_SHA256", we

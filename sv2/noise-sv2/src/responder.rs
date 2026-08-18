@@ -53,8 +53,6 @@ use alloc::{
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit};
 use secp256k1::{ellswift::ElligatorSwift, Keypair, Secp256k1, SecretKey};
 
-const VERSION: u16 = 0;
-
 /// Represents the state and operations of the responder in the Noise NX protocol handshake.
 /// It handles cryptographic key exchanges, manages handshake state, and securely establishes
 /// a connection with the initiator. The responder manages key generation, Diffie-Hellman exchanges,
@@ -342,7 +340,8 @@ impl Responder {
         // 7. appends `EncryptAndHash(SIGNATURE_NOISE_MESSAGE)` to the buffer
         let valid_from = now;
         let not_valid_after = now.saturating_add(self.cert_validity);
-        let signature_noise_message = self.get_signature(VERSION, valid_from, not_valid_after, rng);
+        let signature_noise_message =
+            self.get_signature(crate::CERTIFICATE_VERSION, valid_from, not_valid_after, rng);
         let mut signature_part = Vec::with_capacity(ENCRYPTED_SIGNATURE_NOISE_MESSAGE_SIZE);
         signature_part.extend_from_slice(&signature_noise_message[..]);
         Self::encrypt_and_hash(self, &mut signature_part)?;
