@@ -87,11 +87,14 @@ pub fn to_bytes<T: Encodable + GetSize>(src: T) -> Result<Vec<u8>, Error> {
     Ok(result)
 }
 
-/// Encodes the SV2 data type to the provided byte slice.
+/// Encodes the SV2 data type to the provided byte slice and returns the number of bytes
+/// written.
+///
+/// `dst` may be larger than the encoded value; the bytes past the returned length are left
+/// untouched, so a caller reusing a buffer must only transmit `&dst[..written]`.
 #[allow(clippy::wrong_self_convention)]
-pub fn to_writer<T: Encodable>(src: T, dst: &mut [u8]) -> Result<(), Error> {
-    src.to_bytes(dst)?;
-    Ok(())
+pub fn to_writer<T: Encodable>(src: T, dst: &mut [u8]) -> Result<usize, Error> {
+    src.to_bytes(dst)
 }
 
 /// Decodes an SV2-encoded byte slice into the specified data type.
