@@ -5,7 +5,7 @@
 //! and chain tip state, enabling share validation and mining job lifecycle management.
 
 extern crate alloc;
-use super::{resolve_max_past_jobs, HashMap, MAX_FUTURE_JOBS};
+use super::{HashMap, MAX_FUTURE_JOBS, MAX_PAST_JOBS};
 use crate::{
     chain_tip::ChainTip,
     client::{
@@ -24,7 +24,6 @@ use bitcoin::{
     hashes::sha256d::Hash,
     CompactTarget, Target,
 };
-use core::num::NonZeroUsize;
 use mining_sv2::{
     NewExtendedMiningJobOwned, NewMiningJobOwned, SetNewPrevHashOwned as SetNewPrevHashMp,
     SubmitSharesStandardOwned, ERROR_CODE_SUBMIT_SHARES_DIFFICULTY_TOO_LOW,
@@ -48,7 +47,7 @@ pub type StandardJob = (NewMiningJobOwned, Target);
 /// - future mining jobs (indexed by job_id, activated upon [`NewMiningJob`](mining_sv2::NewMiningJob) receipt, capped at [`MAX_FUTURE_JOBS`])
 /// - active mining job
 /// - past jobs (active jobs under current chain tip, indexed by job_id, capped at
-///   [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS))
+///   [`MAX_PAST_JOBS`])
 /// - stale jobs (jobs from previous chain tip, indexed by job_id)
 /// - share accounting state
 /// - chain tip state
@@ -70,7 +69,7 @@ pub struct StandardChannel {
     past_job_order: VecDeque<u32>,
     stale_jobs: HashMap<u32, StandardJob>,
     // Cap on `past_jobs` under the current chain tip, resolved from the constructor's
-    // `Option<NonZeroUsize>` against `MAX_PAST_JOBS`.
+    // `Option<usize>`; `None` and `Some(0)` both resolve to `MAX_PAST_JOBS`.
     max_past_jobs: usize,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
@@ -79,16 +78,23 @@ pub struct StandardChannel {
 impl StandardChannel {
     /// Creates a new [`StandardChannel`] instance with provided channel parameters.
     ///
-    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
-    /// [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS).
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
+    /// `Some(0)` both select [`MAX_PAST_JOBS`].
     pub fn new(
         channel_id: u32,
         user_identity: String,
         extranonce_prefix: ExtranoncePrefix,
         target: Target,
         nominal_hashrate: f32,
-        max_past_jobs: Option<NonZeroUsize>,
+        max_past_jobs: Option<usize>,
     ) -> Self {
+        // fall back to the default when the caller has no opinion: `None`, or `Some(0)`, which
+        // would otherwise evict the just-retired job and reject the most common late share
+        let max_past_jobs = match max_past_jobs {
+            Some(cap) if cap > 0 => cap,
+            _ => MAX_PAST_JOBS,
+        };
+
         Self {
             channel_id,
             user_identity,
@@ -101,7 +107,7 @@ impl StandardChannel {
             past_jobs: HashMap::new(),
             past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
-            max_past_jobs: resolve_max_past_jobs(max_past_jobs),
+            max_past_jobs,
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
         }
@@ -211,7 +217,7 @@ impl StandardChannel {
 
     /// Returns an iterator over all past jobs for the channel (active jobs under current chain tip).
     ///
-    /// At most [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS) jobs are kept (oldest evicted first).
+    /// At most [`MAX_PAST_JOBS`] jobs are kept (oldest evicted first).
     pub fn get_past_jobs(&self) -> impl Iterator<Item = (&u32, &StandardJob)> + '_ {
         self.past_jobs.iter()
     }
@@ -223,7 +229,7 @@ impl StandardChannel {
 
     /// Returns the number of past jobs tracked by this channel.
     ///
-    /// At most [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS) jobs are kept (oldest evicted first).
+    /// At most [`MAX_PAST_JOBS`] jobs are kept (oldest evicted first).
     pub fn get_past_jobs_count(&self) -> usize {
         self.past_jobs.len()
     }
@@ -305,7 +311,7 @@ impl StandardChannel {
     /// - If `min_ntime` is empty, the job is added to future jobs. At most [`MAX_FUTURE_JOBS`]
     ///   future jobs are kept: storing a new one beyond that limit evicts the oldest.
     /// - If an active job exists, it is moved to past jobs on activation. At most
-    ///   [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS) past jobs are kept: retiring one beyond that limit evicts the oldest.
+    ///   [`MAX_PAST_JOBS`] past jobs are kept: retiring one beyond that limit evicts the oldest.
     pub fn on_new_mining_job(&mut self, new_mining_job: NewMiningJobOwned) {
         self.store_new_mining_job(new_mining_job);
     }
@@ -589,7 +595,6 @@ mod tests {
     };
     use binary_sv2::Sv2OptionOwned as Sv2Option;
     use bitcoin::Target;
-    use core::num::NonZeroUsize;
     use mining_sv2::{
         NewExtendedMiningJobOwned as NewExtendedMiningJob, NewMiningJobOwned as NewMiningJob,
         SetNewPrevHashOwned as SetNewPrevHashMp, SubmitSharesStandardOwned,
@@ -775,8 +780,8 @@ mod tests {
     fn test_past_jobs_respect_constructor_override() {
         // Some(cap) must override MAX_PAST_JOBS on the client standard channel's own eviction
         // path, which keeps its past jobs directly rather than delegating to a JobStore.
-        let custom_cap = NonZeroUsize::new(3).unwrap();
-        assert!(custom_cap.get() < MAX_PAST_JOBS);
+        let custom_cap = 3usize;
+        assert!(custom_cap < MAX_PAST_JOBS);
 
         let channel_id = 1;
         let extranonce_prefix = [
@@ -814,15 +819,31 @@ mod tests {
         }
 
         // bounded by the override, not by MAX_PAST_JOBS
-        assert_eq!(channel.get_past_jobs_count(), custom_cap.get());
+        assert_eq!(channel.get_past_jobs_count(), custom_cap);
 
         // the last job is active; only the newest `custom_cap` retired jobs survive
-        for job_id in 0..job_count - 1 - custom_cap.get() as u32 {
+        for job_id in 0..job_count - 1 - custom_cap as u32 {
             assert!(channel.get_past_job(job_id).is_none());
         }
-        for job_id in job_count - 1 - custom_cap.get() as u32..job_count - 1 {
+        for job_id in job_count - 1 - custom_cap as u32..job_count - 1 {
             assert!(channel.get_past_job(job_id).is_some());
         }
+
+        // `Some(0)` is not a zero cap: it means "no opinion" and selects the default
+        let mut zero_cap_channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![0; 27]).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            Some(0),
+        );
+        for job_id in 0..MAX_PAST_JOBS as u32 + 2 {
+            let mut job = active_job.clone();
+            job.job_id = job_id;
+            zero_cap_channel.on_new_mining_job(job);
+        }
+        assert_eq!(zero_cap_channel.get_past_jobs_count(), MAX_PAST_JOBS);
     }
 
     #[test]

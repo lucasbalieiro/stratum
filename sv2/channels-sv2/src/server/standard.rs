@@ -41,7 +41,7 @@ use crate::{
         jobs::{
             extended::ExtendedJob,
             factory::JobFactory,
-            job_store::{resolve_max_past_jobs, JobStore},
+            job_store::{JobStore, MAX_PAST_JOBS},
             standard::StandardJob,
         },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
@@ -68,7 +68,7 @@ use mining_sv2::{
     ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE, ERROR_CODE_SUBMIT_SHARES_STALE_SHARE,
     ERROR_CODE_UPDATE_CHANNEL_INVALID_NOMINAL_HASHRATE,
 };
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::collections::HashMap;
 use template_distribution_sv2::{NewTemplateOwned, SetNewPrevHashOwned as SetNewPrevHash};
 use tracing::{debug, warn};
 
@@ -121,8 +121,8 @@ impl StandardChannel {
     /// extranonce prefix and a worst-case coinbase prefix do not fit within the coinbase
     /// `scriptSig` budget, see [`JobFactory::fits_script_sig_budget`].
     ///
-    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
-    /// the crate default.
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
+    /// `Some(0)` both select the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_pool(
         channel_id: u32,
@@ -133,7 +133,7 @@ impl StandardChannel {
         share_batch_size: usize,
         expected_share_per_minute: f32,
         pool_tag_string: String,
-        max_past_jobs: Option<NonZeroUsize>,
+        max_past_jobs: Option<usize>,
     ) -> Result<Self, StandardChannelError> {
         Self::new(
             channel_id,
@@ -164,8 +164,8 @@ impl StandardChannel {
     /// extranonce prefix and a worst-case coinbase prefix do not fit within the coinbase
     /// `scriptSig` budget, see [`JobFactory::fits_script_sig_budget`].
     ///
-    /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
-    /// the crate default.
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
+    /// `Some(0)` both select the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_job_declaration_client(
         channel_id: u32,
@@ -177,7 +177,7 @@ impl StandardChannel {
         expected_share_per_minute: f32,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
-        max_past_jobs: Option<NonZeroUsize>,
+        max_past_jobs: Option<usize>,
     ) -> Result<Self, StandardChannelError> {
         Self::new(
             channel_id,
@@ -205,7 +205,7 @@ impl StandardChannel {
         expected_share_per_minute: f32,
         pool_tag_string: Option<String>,
         miner_tag_string: Option<String>,
-        max_past_jobs: Option<NonZeroUsize>,
+        max_past_jobs: Option<usize>,
     ) -> Result<Self, StandardChannelError> {
         let calculated_target =
             match hash_rate_to_target(nominal_hashrate.into(), expected_share_per_minute.into()) {
@@ -235,6 +235,13 @@ impl StandardChannel {
             return Err(StandardChannelError::ScriptSigSizeTooLarge);
         }
 
+        // fall back to the default when the caller has no opinion: `None`, or `Some(0)`, which
+        // would otherwise evict the just-retired job and reject the most common late share
+        let max_past_jobs = match max_past_jobs {
+            Some(cap) if cap > 0 => cap,
+            _ => MAX_PAST_JOBS,
+        };
+
         Ok(Self {
             channel_id,
             user_identity,
@@ -249,7 +256,7 @@ impl StandardChannel {
                 crate::seen_shares_budget(expected_share_per_minute as f64),
             ),
             expected_share_per_minute,
-            job_store: JobStore::new(resolve_max_past_jobs(max_past_jobs)),
+            job_store: JobStore::new(max_past_jobs),
             job_factory,
             chain_tip: None,
         })

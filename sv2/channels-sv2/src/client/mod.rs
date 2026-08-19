@@ -36,7 +36,7 @@ pub const MAX_FUTURE_JOBS: usize = 16;
 ///
 /// This is only the default. The cap is really a retention window — `cap / job rate` — and the
 /// job rate belongs to the deployment, so channel constructors take a
-/// `max_past_jobs: Option<NonZeroUsize>` and fall back to this value when passed `None`.
+/// `max_past_jobs: Option<usize>` and fall back to this value when passed `None` or `Some(0)`.
 pub const MAX_PAST_JOBS: usize = 50;
 
 /// Maximum number of accepted-share hashes a client channel retains for duplicate detection.
@@ -52,16 +52,6 @@ pub const MAX_PAST_JOBS: usize = 50;
 /// far beyond any realistic duplicate window in both cases. Overflow evicts oldest-first, and
 /// an evicted-then-replayed hash costs one double-counted local statistic.
 pub const MAX_SEEN_SHARES: usize = 4_096;
-
-/// Resolves a caller-supplied past-jobs cap against [`MAX_PAST_JOBS`].
-///
-/// Keeps the default referenced in one place, so changing it does not mean touching every
-/// channel constructor.
-pub(crate) fn resolve_max_past_jobs(max_past_jobs: Option<core::num::NonZeroUsize>) -> usize {
-    max_past_jobs
-        .map(core::num::NonZeroUsize::get)
-        .unwrap_or(MAX_PAST_JOBS)
-}
 
 // Type aliases that switch between `std::collections` and `hashbrown`
 // depending on whether the `no_std` feature is enabled.

@@ -10,10 +10,7 @@
 //! - **Retired Extranonce Prefixes**: Holds on to extranonce prefixes that were rotated out of the
 //!   channel while jobs created under them can still accept shares, so that their allocator slots
 //!   are not handed to another channel too early.
-use std::{
-    collections::{HashMap, VecDeque},
-    num::NonZeroUsize,
-};
+use std::collections::{HashMap, VecDeque};
 
 use super::Job;
 use crate::extranonce_manager::ExtranoncePrefix;
@@ -41,18 +38,8 @@ pub(crate) const MAX_FUTURE_JOBS: usize = 16;
 ///
 /// This is only the default. The cap is really a retention window — `cap / job rate` — and the
 /// job rate belongs to the deployment, so channel constructors accept a `max_past_jobs`
-/// override and fall back to this value when none is given.
+/// override and fall back to this value when given `None` or `Some(0)`.
 pub(crate) const MAX_PAST_JOBS: usize = 50;
-
-/// Resolves a caller-supplied past-jobs cap against `MAX_PAST_JOBS`.
-///
-/// Keeps the default referenced in one place, so changing it does not mean touching every
-/// channel constructor.
-pub(crate) fn resolve_max_past_jobs(max_past_jobs: Option<NonZeroUsize>) -> usize {
-    max_past_jobs
-        .map(NonZeroUsize::get)
-        .unwrap_or(MAX_PAST_JOBS)
-}
 
 /// Internal implementation for tracking mining job states in SV2 server channels.
 ///
@@ -78,8 +65,8 @@ pub(crate) struct JobStore<T: Job> {
     // that can accept shares. Holding the object here keeps its allocator slot reserved; dropping
     // it releases the slot.
     retired_extranonce_prefixes: Vec<ExtranoncePrefix>,
-    // Cap on `past_jobs` under the current chain tip. Nonzero by construction: the caller
-    // resolves an `Option<NonZeroUsize>` against `MAX_PAST_JOBS` before reaching here.
+    // Cap on `past_jobs` under the current chain tip. Nonzero by construction: channel
+    // constructors resolve `None`/`Some(0)` to `MAX_PAST_JOBS` before reaching here.
     max_past_jobs: usize,
 }
 
@@ -87,9 +74,9 @@ impl<T: Job> JobStore<T> {
     /// Creates a new empty job store retaining at most `max_past_jobs` past jobs under the
     /// current chain tip.
     pub fn new(max_past_jobs: usize) -> Self {
-        // callers resolve an `Option<NonZeroUsize>` via `resolve_max_past_jobs`, so a zero cap
-        // cannot arrive here; a zero cap would evict the just-retired job immediately and reject
-        // the most common late share as `InvalidJobId`
+        // channel constructors resolve `None`/`Some(0)` to `MAX_PAST_JOBS`, so a zero cap cannot
+        // arrive here; it would evict the just-retired job immediately and reject the most common
+        // late share as `InvalidJobId`
         debug_assert!(max_past_jobs > 0, "max_past_jobs must be nonzero");
         Self {
             future_template_to_job_id: HashMap::new(),
