@@ -41,6 +41,7 @@ use secp256k1::{
     hashes::{sha256::Hash as Sha256Hash, Hash},
     rand, Keypair, Secp256k1, SecretKey, XOnlyPublicKey,
 };
+use zeroize::Zeroize;
 
 // Represents the operations needed during a Noise protocol handshake.
 //
@@ -109,8 +110,11 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
         Self::generate_key_with_rng(&mut rand::thread_rng())
     }
 
+    // The `CryptoRng` bound requires generators that declare themselves suitable for cryptographic
+    // use. Seed quality and correct `CryptoRng` implementations remain the caller's
+    // responsibility.
     #[inline]
-    fn generate_key_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Keypair {
+    fn generate_key_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(rng: &mut R) -> Keypair {
         let secp = Secp256k1::new();
         let (mut secret_key, public_key) = secp.generate_keypair(rng);
         if public_key.x_only_public_key().1 == secp256k1::Parity::Odd {
@@ -142,16 +146,25 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
             opad[i] = key[i] ^ 0x5c;
         }
 
-        let mut to_hash = Vec::with_capacity(64 + data.len());
+        // Sized for the larger of the two rounds (`opad` + a 32-byte digest) so neither one
+        // reallocates and abandons a copy of the padded key on the heap.
+        let mut to_hash = Vec::with_capacity(96 + data.len());
         to_hash.extend_from_slice(&ipad);
         to_hash.extend_from_slice(data);
-        let temp = Sha256Hash::hash(&to_hash).to_byte_array();
+        let mut temp = Sha256Hash::hash(&to_hash).to_byte_array();
 
-        to_hash.clear();
+        // `Vec::zeroize` wipes and clears while the length still spans the padded key.
+        to_hash.zeroize();
         to_hash.extend_from_slice(&opad);
         to_hash.extend_from_slice(&temp);
 
-        Sha256Hash::hash(&to_hash).to_byte_array()
+        let out = Sha256Hash::hash(&to_hash).to_byte_array();
+
+        ipad.zeroize();
+        opad.zeroize();
+        to_hash.zeroize();
+        temp.zeroize();
+        out
     }
 
     // Derives two new keys using the HKDF (HMAC-based Key Derivation Function) process.
@@ -169,9 +182,15 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
     //    specific byte sequence (`0x02`).
     // 4. Returns both outputs.
     fn hkdf_2(chaining_key: &[u8; 32], input_key_material: &[u8]) -> ([u8; 32], [u8; 32]) {
-        let temp_key = Self::hmac_hash(chaining_key, input_key_material);
+        let mut temp_key = Self::hmac_hash(chaining_key, input_key_material);
         let out_1 = Self::hmac_hash(&temp_key, &[0x1]);
-        let out_2 = Self::hmac_hash(&temp_key, &[&out_1[..], &[0x2][..]].concat());
+        let mut in_2 = [0u8; 33];
+        in_2[..32].copy_from_slice(&out_1);
+        in_2[32] = 0x2;
+        let out_2 = Self::hmac_hash(&temp_key, &in_2);
+        in_2.zeroize();
+        // Both outputs are recoverable from the pseudorandom key, so it must not outlive them.
+        temp_key.zeroize();
         (out_1, out_2)
     }
 
@@ -180,10 +199,17 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
         chaining_key: &[u8; 32],
         input_key_material: &[u8],
     ) -> ([u8; 32], [u8; 32], [u8; 32]) {
-        let temp_key = Self::hmac_hash(chaining_key, input_key_material);
+        let mut temp_key = Self::hmac_hash(chaining_key, input_key_material);
         let out_1 = Self::hmac_hash(&temp_key, &[0x1]);
-        let out_2 = Self::hmac_hash(&temp_key, &[&out_1[..], &[0x2][..]].concat());
-        let out_3 = Self::hmac_hash(&temp_key, &[&out_2[..], &[0x3][..]].concat());
+        let mut in_n = [0u8; 33];
+        in_n[..32].copy_from_slice(&out_1);
+        in_n[32] = 0x2;
+        let out_2 = Self::hmac_hash(&temp_key, &in_n);
+        in_n[..32].copy_from_slice(&out_2);
+        in_n[32] = 0x3;
+        let out_3 = Self::hmac_hash(&temp_key, &in_n);
+        in_n.zeroize();
+        temp_key.zeroize();
         (out_1, out_2, out_3)
     }
 
@@ -196,9 +222,13 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
     // use in the next step of the handshake.
     fn mix_key(&mut self, input_key_material: &[u8]) {
         let ck = self.get_ck();
-        let (ck, temp_k) = Self::hkdf_2(ck, input_key_material);
+        let (mut ck, mut temp_k) = Self::hkdf_2(ck, input_key_material);
         self.set_ck(ck);
         self.initialize_key(temp_k);
+        // `set_ck` and `initialize_key` copy the material they are handed, so the locals holding
+        // the originals are wiped here.
+        ck.zeroize();
+        temp_k.zeroize();
     }
 
     // Encrypts the provided plaintext and updates the hash `h` value.
@@ -266,7 +296,7 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
     // Resets the nonce (`n`) to 0 and initializes the handshake cipher using the given 32-byte
     // encryption key. It also updates the internal key storage (`k`) with the new key, preparing
     // the cipher for encrypting or decrypting subsequent messages in the handshake.
-    fn initialize_key(&mut self, key: [u8; 32]) {
+    fn initialize_key(&mut self, mut key: [u8; 32]) {
         self.set_n(0);
         let cipher = ChaCha20Poly1305::from_key(key);
         self.set_handshake_cipher(cipher);
@@ -276,6 +306,8 @@ pub trait HandshakeOp<Cipher: AeadCipher>: CipherState<Cipher> {
             let set_k = self.get_k();
             *set_k = Some(key);
         }
+        // The cipher and `k` hold their own copies now, so this one is wiped.
+        key.zeroize();
     }
 
     fn set_handshake_cipher(&mut self, cipher: ChaCha20Poly1305);

@@ -34,7 +34,8 @@
 // The [`Drop`] trait is implemented to automatically trigger secure erasure when the [`Responder`]
 // instance goes out of scope, preventing potential misuse or leakage of cryptographic material.
 
-use core::{ptr, time::Duration};
+use core::time::Duration;
+use zeroize::Zeroize;
 
 use crate::{
     cipher_state::{Cipher, CipherState},
@@ -49,17 +50,14 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit};
 use secp256k1::{ellswift::ElligatorSwift, Keypair, Secp256k1, SecretKey};
-
-const VERSION: u16 = 0;
 
 /// Represents the state and operations of the responder in the Noise NX protocol handshake.
 /// It handles cryptographic key exchanges, manages handshake state, and securely establishes
 /// a connection with the initiator. The responder manages key generation, Diffie-Hellman exchanges,
 /// message decryption, and state transitions, ensuring secure communication. Sensitive
 /// cryptographic material is securely erased when no longer needed.
-#[derive(Clone)]
 pub struct Responder {
     // Cipher used for encrypting and decrypting messages during the handshake.
     //
@@ -99,18 +97,9 @@ impl core::fmt::Debug for Responder {
     }
 }
 
-// Ensures that the `Cipher` type is not `Sync`, which prevents multiple threads from
-// simultaneously accessing the same instance of `Cipher`. This eliminates the need to handle
-// potential issues related to visibility of changes across threads.
-//
-// After sending the `k` value, we immediately clear it to prevent the original thread from
-// accessing the value again, thereby enhancing security by ensuring the sensitive data is no
-// longer available in memory.
-//
-// The `Cipher` struct is neither `Sync` nor `Copy` due to its `cipher` field, which implements
-// the `AeadCipher` trait. This trait requires mutable access, making the entire struct non-`Sync`
-// and non-`Copy`, even though the key and nonce are simple types.
-
+// Every handshake encryption goes through `encrypt_with_ad`, which takes `&mut self`, and
+// `Responder` is deliberately not `Clone`, so the handshake key and its nonce counter cannot be
+// duplicated or advanced from two places at once. See `Cipher` for the transport-mode counterpart.
 impl CipherState<ChaCha20Poly1305> for Responder {
     fn get_k(&mut self) -> &mut Option<[u8; 32]> {
         &mut self.k
@@ -181,7 +170,7 @@ impl Responder {
     /// `std` and allow `no_std` environments to provide a hardware random number generator for
     /// example.
     #[inline]
-    pub fn new_with_rng<R: rand::Rng + ?Sized>(
+    pub fn new_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(
         a: Keypair,
         cert_validity: u32,
         rng: &mut R,
@@ -225,7 +214,7 @@ impl Responder {
     /// `std` and allow `no_std` environments to provide a hardware random number generator for
     /// example.
     #[inline]
-    pub fn from_authority_kp_with_rng<R: rand::Rng + ?Sized>(
+    pub fn from_authority_kp_with_rng<R: rand::Rng + rand::CryptoRng + ?Sized>(
         public: &[u8; 32],
         private: &[u8; 32],
         cert_validity: Duration,
@@ -257,6 +246,9 @@ impl Responder {
     ///
     /// On failure, the method returns an error if there is an issue during encryption, decryption,
     /// or any other step of the handshake process.
+    ///
+    /// On success the remaining handshake secrets, including the ephemeral, static and authority
+    /// keypairs, are erased, so the [`Responder`] cannot be used for another handshake.
     #[cfg(feature = "std")]
     pub fn step_1(
         &mut self,
@@ -311,7 +303,7 @@ impl Responder {
         let e_private_key = keypair.secret_key();
         let elligatorswift_theirs_ephemeral =
             ElligatorSwift::from_array(elligatorswift_theirs_ephemeral_serialized);
-        let ecdh_ephemeral = ElligatorSwift::shared_secret(
+        let mut ecdh_ephemeral = ElligatorSwift::shared_secret(
             elligatorswift_theirs_ephemeral,
             elligatorswitf_ours_ephemeral,
             e_private_key,
@@ -320,6 +312,7 @@ impl Responder {
         )
         .to_secret_bytes();
         Self::mix_key(self, &ecdh_ephemeral);
+        ecdh_ephemeral.zeroize();
 
         // 5. appends `EncryptAndHash(s.public_key)` (64 bytes encrypted elligatorswift  public key,
         //    16 bytes MAC)
@@ -336,7 +329,7 @@ impl Responder {
 
         // 6. calls `MixKey(ECDH(s.private_key, re.public_key))`
         let s_private_key = self.s.secret_key();
-        let ecdh_static = ElligatorSwift::shared_secret(
+        let mut ecdh_static = ElligatorSwift::shared_secret(
             elligatorswift_theirs_ephemeral,
             elligatorswift_ours_static,
             s_private_key,
@@ -345,11 +338,13 @@ impl Responder {
         )
         .to_secret_bytes();
         Self::mix_key(self, &ecdh_static[..]);
+        ecdh_static.zeroize();
 
         // 7. appends `EncryptAndHash(SIGNATURE_NOISE_MESSAGE)` to the buffer
         let valid_from = now;
         let not_valid_after = now.saturating_add(self.cert_validity);
-        let signature_noise_message = self.get_signature(VERSION, valid_from, not_valid_after, rng);
+        let signature_noise_message =
+            self.get_signature(crate::CERTIFICATE_VERSION, valid_from, not_valid_after, rng);
         let mut signature_part = Vec::with_capacity(ENCRYPTED_SIGNATURE_NOISE_MESSAGE_SIZE);
         signature_part.extend_from_slice(&signature_noise_message[..]);
         Self::encrypt_and_hash(self, &mut signature_part)?;
@@ -361,9 +356,9 @@ impl Responder {
         // 9. return pair of CipherState objects, the first for encrypting transport messages from
         //    initiator to responder, and the second for messages in the other direction:
         let ck = Self::get_ck(self);
-        let (temp_k1, temp_k2) = Self::hkdf_2(ck, &[]);
-        let c1 = ChaCha20Poly1305::new(&temp_k1.into());
-        let c2 = ChaCha20Poly1305::new(&temp_k2.into());
+        let (mut temp_k1, mut temp_k2) = Self::hkdf_2(ck, &[]);
+        let c1 = ChaCha20Poly1305::new(Key::from_slice(&temp_k1[..]));
+        let c2 = ChaCha20Poly1305::new(Key::from_slice(&temp_k2[..]));
         let c1: Cipher<ChaCha20Poly1305> = Cipher::from_key_and_cipher(temp_k1, c1);
         let c2: Cipher<ChaCha20Poly1305> = Cipher::from_key_and_cipher(temp_k2, c2);
         let to_send = out;
@@ -371,10 +366,15 @@ impl Responder {
         let mut decryptor = c1;
         encryptor.erase_k();
         decryptor.erase_k();
+        // The ciphers keep the only copies of the session keys from here on; `erase_k` above wiped
+        // the copies the `Cipher`s carried, and these are the ones the handshake used.
+        temp_k1.zeroize();
+        temp_k2.zeroize();
         let engine = crate::NoiseEngine {
             encryptor,
             decryptor,
         };
+        self.erase();
         Ok((to_send, engine))
     }
 
@@ -412,22 +412,19 @@ impl Responder {
 
     // Securely erases sensitive data in the responder's memory.
     //
-    // Clears all sensitive cryptographic material within the [`Responder`] to prevent any
-    // accidental leakage or misuse. It overwrites the stored keys, chaining key, handshake hash,
-    // and session ciphers with zeros. This function is typically
-    // called when the [`Responder`] instance is no longer needed or before deallocation.
+    // Zeroizes the handshake key (`k`), the chaining key (`ck`) and the handshake
+    // hash (`h`), and non-securely erases the ephemeral, static and authority keypairs. This
+    // function is typically called when the [`Responder`] instance is no longer needed or before
+    // deallocation.
+    //
+    // It does not touch `handshake_cipher`: that key is wiped by [`ChaCha20Poly1305`]'s own
+    // zeroize-on-drop. Nor does it reach the transport session ciphers, which by then live in the
+    // [`NoiseEngine`] returned by [`Self::step_1`] and are wiped when that is dropped.
     fn erase(&mut self) {
-        if let Some(k) = self.k.as_mut() {
-            for b in k {
-                unsafe { ptr::write_volatile(b, 0) };
-            }
-        }
-        for mut b in self.ck {
-            unsafe { ptr::write_volatile(&mut b, 0) };
-        }
-        for mut b in self.h {
-            unsafe { ptr::write_volatile(&mut b, 0) };
-        }
+        self.handshake_cipher = None;
+        self.k.zeroize();
+        self.ck.zeroize();
+        self.h.zeroize();
         self.e.non_secure_erase();
         self.s.non_secure_erase();
         self.a.non_secure_erase();
@@ -480,6 +477,20 @@ mod test {
     #[test]
     #[cfg(feature = "std")]
     #[cfg_attr(miri, ignore)]
+    fn responder_erase_zeroes_ck_and_h() {
+        let mut responder = make_responder();
+        assert!(responder.ck.iter().any(|b| *b != 0));
+        assert!(responder.h.iter().any(|b| *b != 0));
+
+        responder.erase();
+
+        assert_eq!(responder.ck, [0u8; 32]);
+        assert_eq!(responder.h, [0u8; 32]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[cfg_attr(miri, ignore)]
     fn responder_cipher_detects_tampering() {
         use rand::{rngs::StdRng, SeedableRng};
         use secp256k1::ellswift::ElligatorSwift;
@@ -500,5 +511,29 @@ mod test {
         data[0] ^= 0x01;
 
         assert!(engine.decrypt(&mut data).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[cfg_attr(miri, ignore)]
+    fn responder_step_1_erases_handshake_secrets() {
+        use rand::{rngs::StdRng, SeedableRng};
+        use secp256k1::ellswift::ElligatorSwift;
+
+        let mut rng = StdRng::seed_from_u64(3);
+        let mut responder = make_responder();
+        let authority_before = responder.a.secret_key().secret_bytes();
+        let static_before = responder.s.secret_key().secret_bytes();
+        let fake_initiator_ephemeral =
+            ElligatorSwift::from_pubkey(responder.e.public_key()).to_array();
+
+        let _ = responder
+            .step_1_with_now_rng(fake_initiator_ephemeral, 100, &mut rng)
+            .unwrap();
+
+        assert_ne!(responder.a.secret_key().secret_bytes(), authority_before);
+        assert_ne!(responder.s.secret_key().secret_bytes(), static_before);
+        assert_eq!(responder.ck, [0u8; 32]);
+        assert_eq!(responder.h, [0u8; 32]);
     }
 }

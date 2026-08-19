@@ -40,7 +40,7 @@ use noise_sv2::AEAD_MAC_LEN;
 use tracing::error;
 
 #[cfg(feature = "noise_sv2")]
-use crate::{Error, Result, State};
+use crate::{Error, Result, State, TransportEncryptState};
 
 #[cfg(not(feature = "with_buffer_pool"))]
 use buffer_sv2::{Buffer as IsBuffer, BufferFromSystemMemory as Buffer};
@@ -130,45 +130,8 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
     #[inline]
     pub fn encode(&mut self, item: Item<T, B>, state: &mut State) -> Result<B::Slice> {
         match state {
-            State::Transport(noise_engine) => {
-                let len = item.encoded_length();
-                let writable = self.sv2_buffer.get_writable(len);
-
-                // ENCODE THE SV2 FRAME
-                let i: Sv2Frame<T, B::Slice> = item.try_into().map_err(|e| {
-                    #[cfg(feature = "tracing")]
-                    error!("Error while encoding 1 frame: {:?}", e);
-                    Error::FramingError(e)
-                })?;
-                i.serialize(writable)?;
-
-                let sv2 = self.sv2_buffer.get_data_owned();
-                let sv2: &[u8] = sv2.as_ref();
-
-                // ENCRYPT THE HEADER
-                let to_encrypt = self.noise_buffer.get_writable(SV2_FRAME_HEADER_SIZE);
-                to_encrypt.copy_from_slice(&sv2[..SV2_FRAME_HEADER_SIZE]);
-                noise_engine.encrypt(&mut self.noise_buffer)?;
-
-                // ENCRYPT THE PAYLOAD IN CHUNKS
-                let mut start = SV2_FRAME_HEADER_SIZE;
-                let mut end = if sv2.len() - start < (SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN) {
-                    sv2.len()
-                } else {
-                    SV2_FRAME_CHUNK_SIZE + start - AEAD_MAC_LEN
-                };
-                let mut encrypted_len = ENCRYPTED_SV2_FRAME_HEADER_SIZE;
-
-                while start < sv2.len() {
-                    let to_encrypt = self.noise_buffer.get_writable(end - start);
-                    to_encrypt.copy_from_slice(&sv2[start..end]);
-                    self.noise_buffer.danger_set_start(encrypted_len);
-                    noise_engine.encrypt(&mut self.noise_buffer)?;
-                    encrypted_len += self.noise_buffer.as_ref().len();
-                    start = end;
-                    end = (start + SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN).min(sv2.len());
-                }
-                self.noise_buffer.danger_set_start(0);
+            State::Transport(engine) => {
+                self.encrypt_frame(item, |buf| engine.encrypt(buf).map_err(Into::into))?
             }
             State::HandShake(_) => self.while_handshaking(item)?,
             State::NotInitialized(_) => self.while_handshaking(item)?,
@@ -178,6 +141,90 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
         self.sv2_buffer.get_data_owned();
         // Return noise_buffer
         Ok(self.noise_buffer.get_data_owned())
+    }
+
+    /// Encodes an Sv2 frame and encrypts it with the encrypting half of a split [`State`].
+    #[inline]
+    pub fn encode_transport(
+        &mut self,
+        item: Item<T, B>,
+        state: &mut TransportEncryptState,
+    ) -> Result<B::Slice> {
+        self.encrypt_frame(item, |buf| state.encrypt(buf))?;
+
+        // Clear sv2_buffer
+        self.sv2_buffer.get_data_owned();
+        // Return noise_buffer
+        Ok(self.noise_buffer.get_data_owned())
+    }
+
+    // Serializes `item` into an Sv2 frame and encrypts it in place through `encrypt`, leaving the
+    // buffers clean if any step of that fails.
+    #[inline]
+    fn encrypt_frame(
+        &mut self,
+        item: Item<T, B>,
+        encrypt: impl FnMut(&mut B) -> Result<()>,
+    ) -> Result<()> {
+        let result = self.try_encrypt_frame(item, encrypt);
+
+        if result.is_err() {
+            // Not a no-op: the write offset and the bytes written so far persist across calls, so
+            // without this the next frame is written at the failing chunk's offset with the remains
+            // of this one in front of it.
+            self.noise_buffer.danger_set_start(0);
+            self.noise_buffer.get_data_owned();
+            self.sv2_buffer.get_data_owned();
+        }
+
+        result
+    }
+
+    #[inline]
+    fn try_encrypt_frame(
+        &mut self,
+        item: Item<T, B>,
+        mut encrypt: impl FnMut(&mut B) -> Result<()>,
+    ) -> Result<()> {
+        let len = item.encoded_length();
+        let writable = self.sv2_buffer.get_writable(len);
+
+        // ENCODE THE SV2 FRAME
+        let i: Sv2Frame<T, B::Slice> = item.try_into().map_err(|e| {
+            #[cfg(feature = "tracing")]
+            error!("Error while encoding 1 frame: {:?}", e);
+            Error::FramingError(e)
+        })?;
+        i.serialize(writable)?;
+
+        let sv2 = self.sv2_buffer.get_data_owned();
+        let sv2: &[u8] = sv2.as_ref();
+
+        // ENCRYPT THE HEADER
+        let to_encrypt = self.noise_buffer.get_writable(SV2_FRAME_HEADER_SIZE);
+        to_encrypt.copy_from_slice(&sv2[..SV2_FRAME_HEADER_SIZE]);
+        encrypt(&mut self.noise_buffer)?;
+
+        // ENCRYPT THE PAYLOAD IN CHUNKS
+        let mut start = SV2_FRAME_HEADER_SIZE;
+        let mut end = if sv2.len() - start < (SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN) {
+            sv2.len()
+        } else {
+            SV2_FRAME_CHUNK_SIZE + start - AEAD_MAC_LEN
+        };
+        let mut encrypted_len = ENCRYPTED_SV2_FRAME_HEADER_SIZE;
+
+        while start < sv2.len() {
+            let to_encrypt = self.noise_buffer.get_writable(end - start);
+            to_encrypt.copy_from_slice(&sv2[start..end]);
+            self.noise_buffer.danger_set_start(encrypted_len);
+            encrypt(&mut self.noise_buffer)?;
+            encrypted_len += self.noise_buffer.as_ref().len();
+            start = end;
+            end = (start + SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN).min(sv2.len());
+        }
+        self.noise_buffer.danger_set_start(0);
+        Ok(())
     }
 
     // Encodes Sv2 frames during the handshake phase of the Noise protocol.
@@ -296,7 +343,10 @@ mod prop_tests {
     use super::*;
     #[cfg(feature = "noise_sv2")]
     use crate::{HandshakeRole, State};
-    use binary_sv2::Serialize;
+    use binary_sv2::{Deserialize, Serialize};
+    // Not redundant: the glob import above brings in `crate::Result`, whose single type parameter
+    // the code generated by the `Deserialize` derive cannot use.
+    use core::result::Result;
     #[cfg(feature = "noise_sv2")]
     use framing_sv2::framing::Frame;
     use framing_sv2::framing::Sv2Frame;
@@ -318,7 +368,7 @@ mod prop_tests {
 
     type Slice = <Buffer as IsBuffer>::Slice;
 
-    #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     struct TestMessage {
         value: u16,
     }
@@ -448,6 +498,62 @@ mod prop_tests {
             }
             Err(_) => TestResult::failed(),
         }
+    }
+
+    #[cfg(feature = "noise_sv2")]
+    #[test]
+    fn noise_encoder_recovers_from_a_failed_chunk_encryption() {
+        let frame = Frame::Sv2(
+            Sv2Frame::<TestMessage, Slice>::from_message(TestMessage { value: 1 }, 0, 0, false)
+                .unwrap(),
+        );
+
+        let mut encoder = NoiseEncoder::<TestMessage>::new();
+
+        // Let the header through and fail on the first payload chunk: that is the point where the
+        // write offset has already been moved.
+        let mut calls = 0;
+        let result = encoder.encrypt_frame(frame, |buf| {
+            calls += 1;
+            if calls == 1 {
+                // Stand in for the header encryption, which grows the buffer by a MAC.
+                buf.get_writable(AEAD_MAC_LEN);
+                Ok(())
+            } else {
+                Err(crate::Error::UnexpectedNoiseState)
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(IsBuffer::len(&encoder.noise_buffer), 0);
+        assert!(encoder.noise_buffer.as_ref().is_empty());
+
+        // The next frame must be one the peer can open, with nothing of the failed one in it.
+        let (mut sender_state, mut receiver_state) = make_transport_state_pair();
+        let next = Frame::Sv2(
+            Sv2Frame::<TestMessage, Slice>::from_message(TestMessage { value: 2 }, 0, 0, false)
+                .unwrap(),
+        );
+        let encrypted = encoder.encode(next, &mut sender_state).unwrap();
+
+        let mut decoder = crate::StandardNoiseDecoder::<TestMessage>::new();
+        let mut offset = 0;
+        let mut decoded = loop {
+            let writable = decoder.writable();
+            let len = writable.len();
+            writable.copy_from_slice(&encrypted[offset..offset + len]);
+            offset += len;
+
+            match decoder.next_frame(&mut receiver_state) {
+                Ok(Frame::Sv2(f)) => break f,
+                Ok(_) => panic!("expected an Sv2 frame"),
+                Err(crate::Error::MissingBytes(_)) => {}
+                Err(e) => panic!("failed to decode the frame after a failed encode: {e:?}"),
+            }
+        };
+        assert_eq!(
+            binary_sv2::from_bytes::<TestMessage>(decoded.payload()).unwrap(),
+            TestMessage { value: 2 }
+        );
     }
 
     /// Verifies that `NoiseEncoder` can encrypt multiple frames

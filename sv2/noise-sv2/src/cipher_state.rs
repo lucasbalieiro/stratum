@@ -27,10 +27,9 @@
 // The [`CipherState`] trait and [`Cipher`] type manage secure data handling, key management, and
 // nonce tracking throughout the communication session.
 
-use core::ptr;
-
 use crate::aed_cipher::AeadCipher;
 use chacha20poly1305::aead::{Buffer, Error};
+use zeroize::Zeroize;
 
 // The `CipherState` trait manages AEAD ciphers for secure communication, handling the encryption
 // key, nonce, and cipher instance, ensuring proper key and nonce management.
@@ -93,6 +92,11 @@ where
     // contain the ciphertext. The encryption is performed using the current nonce and the AAD.
     // The nonce is incremented after each successful encryption.
     fn encrypt_with_ad<T: Buffer>(&mut self, ad: &[u8], data: &mut T) -> Result<(), Error> {
+        // The Noise spec reserves nonce 2^64-1: once the counter reaches it, fail instead of
+        // using it or wrapping back to 0.
+        if self.get_n() == u64::MAX {
+            return Err(Error);
+        }
         let n = self.nonce_to_bytes();
         self.set_n(self.get_n() + 1);
         if let Some(c) = self.get_cipher() {
@@ -115,6 +119,9 @@ where
     // contain the plaintext. The decryption is performed using the current nonce and the provided
     // AAD. The nonce is incremented after each successful decryption.
     fn decrypt_with_ad<T: Buffer>(&mut self, ad: &[u8], data: &mut T) -> Result<(), Error> {
+        if self.get_n() == u64::MAX {
+            return Err(Error);
+        }
         let n = self.nonce_to_bytes();
         self.set_n(self.get_n() + 1);
         if let Some(c) = self.get_cipher() {
@@ -139,7 +146,6 @@ where
 // It stores the optional encryption key, the nonce, and the optional cipher instance itself. The
 // [`CipherState`] trait is implemented to provide a consistent interface for managing cipher
 // state across different AEAD ciphers.
-#[derive(Clone)]
 pub struct Cipher<C: AeadCipher> {
     // Optional 32-byte encryption key.
     k: Option<[u8; 32]>,
@@ -149,25 +155,24 @@ pub struct Cipher<C: AeadCipher> {
     cipher: Option<C>,
 }
 
-// Ensures that the `Cipher` type is not `Sync`, which prevents multiple threads from
-// simultaneously accessing the same instance of `Cipher`. This eliminates the need to handle
-// potential issues related to visibility of changes across threads.
+// Nonce uniqueness rests on exclusive access, not on thread affinity: `Cipher` is both `Send` and
+// `Sync`, so sharing one instance across threads is allowed and still requires the caller to
+// synchronize. What prevents two encryptions from reusing a nonce is that `encrypt`/`decrypt` take
+// `&mut self` and that the type is deliberately not `Clone`, so the key and its nonce counter can
+// never be duplicated or advanced from two places at once.
 //
-// After sending the `k` value, we immediately clear it to prevent the original thread from
-// accessing the value again, thereby enhancing security by ensuring the sensitive data is no
-// longer available in memory.
-//
-// The `Cipher` struct is neither `Sync` nor `Copy` due to its `cipher` field, which implements
-// the `AeadCipher` trait. This trait requires mutable access, making the entire struct non-`Sync`
-// and non-`Copy`, even though the key and nonce are simple types.
+// The handshake key `k` is cleared as soon as the handshake no longer needs it (see `erase_k`),
+// so it does not outlive its use even though the cipher itself lives for the whole session.
 impl<C: AeadCipher> Cipher<C> {
     // Internal use only, we need k for handshake
-    pub fn from_key_and_cipher(k: [u8; 32], c: C) -> Self {
-        Self {
+    pub fn from_key_and_cipher(mut k: [u8; 32], c: C) -> Self {
+        let state = Self {
             k: Some(k),
             n: 0,
             cipher: Some(c),
-        }
+        };
+        k.zeroize();
+        state
     }
 
     // Encrypts data in place using an empty additional associated data buffer.
@@ -182,12 +187,7 @@ impl<C: AeadCipher> Cipher<C> {
 
     // Securely erases the stored encryption key.
     pub fn erase_k(&mut self) {
-        if let Some(k) = self.k.as_mut() {
-            for b in k {
-                unsafe { ptr::write_volatile(b, 0) };
-            }
-            self.k = None;
-        }
+        self.k.zeroize();
     }
 }
 
@@ -213,5 +213,24 @@ impl<C: AeadCipher> CipherState<C> for Cipher<C> {
 
     fn set_k(&mut self, k: Option<[u8; 32]>) {
         self.k = k;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+
+    #[test]
+    fn exhausted_nonce_fails_instead_of_wrapping() {
+        let key = [7u8; 32];
+        let cipher = ChaCha20Poly1305::new(&key.into());
+        let mut cipher = Cipher::from_key_and_cipher(key, cipher);
+        cipher.set_n(u64::MAX);
+
+        let mut data = alloc::vec![1u8, 2, 3];
+        assert!(cipher.encrypt(&mut data).is_err());
+        assert!(cipher.decrypt(&mut data).is_err());
+        assert_eq!(cipher.get_n(), u64::MAX);
     }
 }

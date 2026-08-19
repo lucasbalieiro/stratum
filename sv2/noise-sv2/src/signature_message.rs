@@ -118,6 +118,10 @@ impl SignatureNoiseMessage {
         // See https://github.com/stratum-mining/stratum/issues/2015
         const TIME_LEEWAY: u32 = 10;
 
+        if self.version != crate::CERTIFICATE_VERSION {
+            return false;
+        }
+
         if let Some(authority_pk) = authority_pk {
             // Use saturating ops to cap edges (valid_from ≥ 0, not_valid_after ≤ u32::MAX),
             // preventing wrap-around and subtle validation bugs with untrusted timestamps.
@@ -196,5 +200,41 @@ impl SignatureNoiseMessage {
         m[8] = self.not_valid_after.to_le_bytes()[2];
         m[9] = self.not_valid_after.to_le_bytes()[3];
         (m, self.signature)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "std")]
+    #[cfg_attr(miri, ignore)]
+    fn verify_rejects_unsupported_certificate_version() {
+        use rand::{rngs::StdRng, SeedableRng};
+
+        let secp = Secp256k1::new();
+        let mut rng = StdRng::seed_from_u64(42);
+        let authority = Keypair::new(&secp, &mut rng);
+        let responder_static = Keypair::new(&secp, &mut rng);
+
+        let mut encoded = [0u8; 74];
+        encoded[0..2].copy_from_slice(&(crate::CERTIFICATE_VERSION + 1).to_le_bytes());
+        encoded[2..6].copy_from_slice(&100u32.to_le_bytes());
+        encoded[6..10].copy_from_slice(&200u32.to_le_bytes());
+        SignatureNoiseMessage::sign_with_rng(
+            &mut encoded,
+            &responder_static.x_only_public_key().0,
+            &authority,
+            &mut rng,
+        );
+
+        let certificate = SignatureNoiseMessage::from(encoded);
+        let authority_pk = Some(authority.x_only_public_key().0);
+        assert!(!certificate.verify_with_now(
+            &responder_static.x_only_public_key().0,
+            &authority_pk,
+            150,
+        ));
     }
 }

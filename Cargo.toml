@@ -27,6 +27,7 @@ serde = { version = "1.0.89", default-features = false, features = ["derive", "a
 serde_json = { version = "1.0.64", default-features = false, features = ["alloc"] }
 tracing = "0.1"
 trait-variant = "0.1.2"
+zeroize = { version = "1.8.2", default-features = false, features = ["alloc"] }
 # Pinned because newer versions pull in a transitive dependency that
 # requires the Rust 2024 edition, which is not supported by the 1.75 toolchain.
 quickcheck = ">= 1.0.3, < 1.1"
