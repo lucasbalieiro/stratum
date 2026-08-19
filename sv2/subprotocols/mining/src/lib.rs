@@ -112,6 +112,8 @@ pub const ERROR_CODE_OPEN_MINING_CHANNEL_STANDARD_CHANNELS_NOT_SUPPORTED_FOR_CUS
     "standard-channels-not-supported-for-custom-work";
 pub const ERROR_CODE_OPEN_MINING_CHANNEL_EXTENDED_CHANNELS_NOT_SUPPORTED_FOR_STANDARD_JOBS: &str =
     "extended-channels-not-supported-for-standard-jobs";
+pub const ERROR_CODE_OPEN_MINING_CHANNEL_CHANNEL_CAPACITY_EXHAUSTED: &str =
+    "channel-capacity-exhausted";
 pub const ERROR_CODE_OPEN_MINING_CHANNEL_INVALID_USER_IDENTITY: &str = "invalid-user-identity";
 pub const ERROR_CODE_OPEN_MINING_CHANNEL_INVALID_NOMINAL_HASHRATE: &str =
     "invalid-nominal-hashrate";
