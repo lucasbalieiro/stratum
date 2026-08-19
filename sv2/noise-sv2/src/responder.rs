@@ -421,6 +421,7 @@ impl Responder {
     // zeroize-on-drop. Nor does it reach the transport session ciphers, which by then live in the
     // [`NoiseEngine`] returned by [`Self::step_1`] and are wiped when that is dropped.
     fn erase(&mut self) {
+        self.handshake_cipher = None;
         self.k.zeroize();
         self.ck.zeroize();
         self.h.zeroize();
