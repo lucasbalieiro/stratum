@@ -49,7 +49,7 @@ use crate::{
         jobs::{
             extended::ExtendedJob,
             factory::JobFactory,
-            job_store::{JobStore, MAX_PAST_JOBS},
+            job_store::{resolve_max_past_jobs, JobStore},
             JobOrigin,
         },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
@@ -263,11 +263,7 @@ impl ExtendedChannel {
             job_id_to_target: HashMap::new(),
             nominal_hashrate,
             stable_hashrate: false,
-            job_store: JobStore::new(
-                max_past_jobs
-                    .map(NonZeroUsize::get)
-                    .unwrap_or(MAX_PAST_JOBS),
-            ),
+            job_store: JobStore::new(resolve_max_past_jobs(max_past_jobs)),
             job_factory,
             share_accounting: ShareAccounting::new(
                 share_batch_size,

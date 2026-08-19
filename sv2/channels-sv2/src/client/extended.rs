@@ -4,7 +4,7 @@
 //! **Extended Channel** within a mining client.
 
 extern crate alloc;
-use super::{HashMap, MAX_FUTURE_JOBS, MAX_PAST_JOBS};
+use super::{resolve_max_past_jobs, HashMap, MAX_FUTURE_JOBS};
 use crate::{
     bip141::try_strip_bip141,
     chain_tip::ChainTip,
@@ -62,7 +62,7 @@ pub type ExtendedJob = (NewExtendedMiningJobOwned, Vec<u8>, Target);
 ///   [`SetNewPrevHash`](SetNewPrevHashMp) message.
 /// - The currently active job.
 /// - Past jobs (previously active under the current chain tip, indexed by `job_id`, capped at
-///   [`MAX_PAST_JOBS`]).
+///   [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS)).
 /// - Stale jobs (previously active and past jobs under the previous chain tip, indexed by
 ///   `job_id`).
 /// - Share accounting for the channel (as tracked by the client).
@@ -100,7 +100,7 @@ impl ExtendedChannel {
     /// Constructs a new [`ExtendedChannel`].
     ///
     /// `max_past_jobs` caps the past jobs retained under the current chain tip; `None` uses
-    /// [`MAX_PAST_JOBS`].
+    /// [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_id: u32,
@@ -126,9 +126,7 @@ impl ExtendedChannel {
             past_jobs: HashMap::new(),
             past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
-            max_past_jobs: max_past_jobs
-                .map(NonZeroUsize::get)
-                .unwrap_or(MAX_PAST_JOBS),
+            max_past_jobs: resolve_max_past_jobs(max_past_jobs),
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
         }
@@ -260,7 +258,7 @@ impl ExtendedChannel {
 
     /// Returns an iterator over all past jobs for this channel.
     ///
-    /// At most [`MAX_PAST_JOBS`] jobs are kept (oldest evicted first).
+    /// At most [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS) jobs are kept (oldest evicted first).
     pub fn get_past_jobs(&self) -> impl Iterator<Item = (&u32, &ExtendedJob)> + '_ {
         self.past_jobs.iter()
     }
@@ -272,7 +270,7 @@ impl ExtendedChannel {
 
     /// Returns the number of past jobs tracked by this channel.
     ///
-    /// At most [`MAX_PAST_JOBS`] jobs are kept (oldest evicted first).
+    /// At most [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS) jobs are kept (oldest evicted first).
     pub fn get_past_jobs_count(&self) -> usize {
         self.past_jobs.len()
     }
@@ -323,7 +321,7 @@ impl ExtendedChannel {
     ///   At most [`MAX_FUTURE_JOBS`] future jobs are kept: storing a new one beyond that limit
     ///   evicts the oldest.
     /// - Otherwise, the job is activated and previous active job moves to the past jobs list.
-    ///   At most [`MAX_PAST_JOBS`] past jobs are kept: retiring one beyond that limit evicts the
+    ///   At most [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS) past jobs are kept: retiring one beyond that limit evicts the
     ///   oldest.
     pub fn on_new_extended_mining_job(
         &mut self,
@@ -390,7 +388,7 @@ impl ExtendedChannel {
     /// Handles a `SetCustomMiningJobSuccess` message from upstream.
     /// Requires the corresponding `SetCustomMiningJob`.
     ///
-    /// The previous active job (if any) moves to the past jobs list. At most [`MAX_PAST_JOBS`]
+    /// The previous active job (if any) moves to the past jobs list. At most [`MAX_PAST_JOBS`](super::MAX_PAST_JOBS)
     /// past jobs are kept: retiring one beyond that limit evicts the oldest.
     ///
     /// To be used by a Sv2 Job Declarator Client
@@ -1136,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn test_past_jobs_honour_constructor_override() {
+    fn test_past_jobs_respect_constructor_override() {
         // Some(cap) must override MAX_PAST_JOBS all the way through to the eviction path.
         let custom_cap = NonZeroUsize::new(3).unwrap();
         assert!(custom_cap.get() < MAX_PAST_JOBS);

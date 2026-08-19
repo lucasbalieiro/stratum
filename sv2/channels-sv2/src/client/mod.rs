@@ -53,6 +53,16 @@ pub const MAX_PAST_JOBS: usize = 50;
 /// an evicted-then-replayed hash costs one double-counted local statistic.
 pub const MAX_SEEN_SHARES: usize = 4_096;
 
+/// Resolves a caller-supplied past-jobs cap against [`MAX_PAST_JOBS`].
+///
+/// Keeps the default referenced in one place, so changing it does not mean touching every
+/// channel constructor.
+pub(crate) fn resolve_max_past_jobs(max_past_jobs: Option<core::num::NonZeroUsize>) -> usize {
+    max_past_jobs
+        .map(core::num::NonZeroUsize::get)
+        .unwrap_or(MAX_PAST_JOBS)
+}
+
 // Type aliases that switch between `std::collections` and `hashbrown`
 // depending on whether the `no_std` feature is enabled.
 #[cfg(not(feature = "no_std"))]

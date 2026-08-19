@@ -10,7 +10,10 @@
 //! - **Retired Extranonce Prefixes**: Holds on to extranonce prefixes that were rotated out of the
 //!   channel while jobs created under them can still accept shares, so that their allocator slots
 //!   are not handed to another channel too early.
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    num::NonZeroUsize,
+};
 
 use super::Job;
 use crate::extranonce_manager::ExtranoncePrefix;
@@ -40,6 +43,16 @@ pub(crate) const MAX_FUTURE_JOBS: usize = 16;
 /// job rate belongs to the deployment, so channel constructors accept a `max_past_jobs`
 /// override and fall back to this value when none is given.
 pub(crate) const MAX_PAST_JOBS: usize = 50;
+
+/// Resolves a caller-supplied past-jobs cap against `MAX_PAST_JOBS`.
+///
+/// Keeps the default referenced in one place, so changing it does not mean touching every
+/// channel constructor.
+pub(crate) fn resolve_max_past_jobs(max_past_jobs: Option<NonZeroUsize>) -> usize {
+    max_past_jobs
+        .map(NonZeroUsize::get)
+        .unwrap_or(MAX_PAST_JOBS)
+}
 
 /// Internal implementation for tracking mining job states in SV2 server channels.
 ///
@@ -74,6 +87,10 @@ impl<T: Job> JobStore<T> {
     /// Creates a new empty job store retaining at most `max_past_jobs` past jobs under the
     /// current chain tip.
     pub fn new(max_past_jobs: usize) -> Self {
+        // callers resolve an `Option<NonZeroUsize>` via `resolve_max_past_jobs`, so a zero cap
+        // cannot arrive here; a zero cap would evict the just-retired job immediately and reject
+        // the most common late share as `InvalidJobId`
+        debug_assert!(max_past_jobs > 0, "max_past_jobs must be nonzero");
         Self {
             future_template_to_job_id: HashMap::new(),
             future_template_order: VecDeque::new(),
@@ -420,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn past_jobs_honour_a_custom_cap() {
+    fn past_jobs_respect_a_custom_cap() {
         // a store built with a cap below the default must evict against that cap, not the default
         let custom_cap = 2;
         assert!(custom_cap < MAX_PAST_JOBS);

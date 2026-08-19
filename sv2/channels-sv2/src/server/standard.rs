@@ -41,7 +41,7 @@ use crate::{
         jobs::{
             extended::ExtendedJob,
             factory::JobFactory,
-            job_store::{JobStore, MAX_PAST_JOBS},
+            job_store::{resolve_max_past_jobs, JobStore},
             standard::StandardJob,
         },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
@@ -249,11 +249,7 @@ impl StandardChannel {
                 crate::seen_shares_budget(expected_share_per_minute as f64),
             ),
             expected_share_per_minute,
-            job_store: JobStore::new(
-                max_past_jobs
-                    .map(NonZeroUsize::get)
-                    .unwrap_or(MAX_PAST_JOBS),
-            ),
+            job_store: JobStore::new(resolve_max_past_jobs(max_past_jobs)),
             job_factory,
             chain_tip: None,
         })
