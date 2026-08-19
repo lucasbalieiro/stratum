@@ -299,6 +299,7 @@ pub struct OpenMiningChannelError<'decoder> {
     ///
     /// - standard-channels-not-supported-for-custom-work
     /// - extended-channels-not-supported-for-standard-jobs
+    /// - channel-capacity-exhausted
     /// - invalid-user-identity
     /// - invalid-nominal-hashrate
     /// - min-extranonce-size-too-large
