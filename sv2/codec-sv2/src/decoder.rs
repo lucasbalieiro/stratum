@@ -33,7 +33,7 @@ use core::marker::PhantomData;
 #[cfg(feature = "noise_sv2")]
 use framing_sv2::framing::HandShakeFrame;
 use framing_sv2::{
-    framing::{Frame, Sv2Frame},
+    framing::{Frame, SizeHint, Sv2Frame},
     header::Header,
 };
 #[cfg(feature = "noise_sv2")]
@@ -41,9 +41,7 @@ use framing_sv2::{ENCRYPTED_SV2_FRAME_HEADER_SIZE, SV2_FRAME_CHUNK_SIZE, SV2_FRA
 #[cfg(feature = "noise_sv2")]
 use noise_sv2::NOISE_FRAME_HEADER_SIZE;
 
-#[cfg(feature = "noise_sv2")]
-use crate::error::Error;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 use crate::Error::MissingBytes;
 #[cfg(feature = "noise_sv2")]
@@ -136,12 +134,20 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
     /// `writable`, read another chunk from the incoming message stream, and then call `next_frame`
     /// again. This process should be repeated until `next_frame` returns `Ok`, indicating that the
     /// full message has been received, and the decoding and decryption of the frame can proceed.
+    ///
+    /// `Error::UnexpectedTrailingBytes` reports bytes buffered past the end of the current frame.
+    /// The buffers are drained, but in transport mode the AEAD nonce may already have advanced
+    /// for the dropped frame, so the caller must tear down the connection and re-handshake.
     #[inline]
     pub fn next_frame(&mut self, state: &mut State) -> Result<Frame<T, B::Slice>> {
         match state {
             State::HandShake(_) => unreachable!(),
             State::NotInitialized(msg_len) => {
-                let hint = *msg_len - self.noise_buffer.as_ref().len();
+                let buffered = self.noise_buffer.as_ref().len();
+                if buffered > *msg_len {
+                    return Err(self.reset_after_surplus(buffered - *msg_len, *msg_len));
+                }
+                let hint = *msg_len - buffered;
                 match hint {
                     0 => {
                         self.missing_noise_b = NOISE_FRAME_HEADER_SIZE;
@@ -175,17 +181,26 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
         decrypt: impl FnMut(&mut B) -> Result<()>,
     ) -> Result<Frame<T, B::Slice>> {
         let hint = if IsBuffer::len(&self.sv2_buffer) < SV2_FRAME_HEADER_SIZE {
-            let len = IsBuffer::len(&self.noise_buffer);
-            let src = self.noise_buffer.get_data_by_ref(len);
-            if src.len() < ENCRYPTED_SV2_FRAME_HEADER_SIZE {
-                ENCRYPTED_SV2_FRAME_HEADER_SIZE - src.len()
-            } else {
-                0
+            let buffered = IsBuffer::len(&self.noise_buffer);
+            if buffered > ENCRYPTED_SV2_FRAME_HEADER_SIZE {
+                        return Err(self.reset_after_surplus(
+                    buffered - ENCRYPTED_SV2_FRAME_HEADER_SIZE,
+                    ENCRYPTED_SV2_FRAME_HEADER_SIZE,
+                ));
             }
+            ENCRYPTED_SV2_FRAME_HEADER_SIZE - buffered
         } else {
             let src = self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE);
             let header = Header::from_bytes(src)?;
-            header.encrypted_len() - IsBuffer::len(&self.noise_buffer)
+            let encrypted_len = header.encrypted_len();
+                    let buffered = IsBuffer::len(&self.noise_buffer);
+                    if buffered > encrypted_len {
+                        return Err(self.reset_after_surplus(
+                            buffered - encrypted_len,
+                            ENCRYPTED_SV2_FRAME_HEADER_SIZE,
+                        ));
+                    }
+                    encrypted_len - buffered
         };
 
         match hint {
@@ -198,6 +213,15 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
                 Err(Error::MissingBytes(hint))
             }
         }
+    }
+
+    fn reset_after_surplus(&mut self, surplus: usize, missing: usize) -> Error {
+        let _ = self.noise_buffer.get_data_owned();
+        if !IsBuffer::is_empty(&self.sv2_buffer) {
+            let _ = self.sv2_buffer.get_data_owned();
+        }
+        self.missing_noise_b = missing;
+        Error::UnexpectedTrailingBytes(surplus)
     }
 
     /// Returns the number of bytes expected in the next read operation.
@@ -248,10 +272,10 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
         // Conditionally call `.into()` based on `with_buffer_pool` feature to handle differences
         // between Clippy and test builds. See: https://github.com/stratum-mining/stratum/pull/1860#discussion_r2457908851
         #[cfg(feature = "with_buffer_pool")]
-        let frame = HandShakeFrame::from_bytes_unchecked(src.into());
+        let frame = HandShakeFrame::from_bytes(src.into());
 
         #[cfg(not(feature = "with_buffer_pool"))]
-        let frame = HandShakeFrame::from_bytes_unchecked(src);
+        let frame = HandShakeFrame::from_bytes(src);
 
         frame.into()
     }
@@ -398,34 +422,37 @@ pub struct WithoutNoise<B: IsBuffer, T: Serialize + binary_sv2::GetSize> {
 }
 
 impl<T: Serialize + binary_sv2::GetSize, B: IsBuffer> WithoutNoise<B, T> {
-    /// Attempts to decode the next frame, returning either a frame or an error indicating how many
-    /// bytes are missing.
+    /// Attempts to decode the next frame, returning either a frame or an error describing how the
+    /// buffered bytes differ from the frame size declared by the header.
     ///
-    /// Attempts to decode the next Sv2 frame.
+    /// `Error::MissingBytes` carries the number of bytes still required (until a full header has
+    /// been buffered, only the bytes needed to complete the header): resize the decoder buffer
+    /// using `writable`, read another chunk from the stream, and call `next_frame` again until it
+    /// returns `Ok`.
     ///
-    /// On success, the decoded frame is returned. Otherwise, an error indicating the number of
-    /// missing bytes required to complete the frame is returned.
-    ///
-    /// In the case of `Error::MissingBytes`, the user should resize the decoder buffer using
-    /// `writable`, read another chunk from the incoming message stream, and then call `next_frame`
-    /// again. This process should be repeated until `next_frame` returns `Ok`, indicating that the
-    /// full message has been received, and the frame can be fully decoded.
+    /// `Error::UnexpectedTrailingBytes` reports bytes buffered past the end of the frame. The
+    /// buffer is drained — including the complete frame that preceded the surplus — so the caller
+    /// must resynchronize the stream or reconnect.
     #[inline]
     pub fn next_frame(&mut self) -> Result<Sv2Frame<T, B::Slice>> {
         let len = self.buffer.len();
         let src = self.buffer.get_data_by_ref(len);
-        let hint = Sv2Frame::<T, B::Slice>::size_hint(src) as usize;
 
-        match hint {
-            0 => {
+        match Sv2Frame::<T, B::Slice>::size_hint(src) {
+            SizeHint::Exact => {
                 self.missing_b = Header::SIZE;
                 let src = self.buffer.get_data_owned();
                 let frame = Sv2Frame::<T, B::Slice>::from_bytes_unchecked(src);
                 Ok(frame)
             }
-            _ => {
-                self.missing_b = hint;
+            SizeHint::Missing(missing) => {
+                self.missing_b = missing;
                 Err(MissingBytes(self.missing_b))
+            }
+            SizeHint::Surplus(surplus) => {
+                self.missing_b = Header::SIZE;
+                let _ = self.buffer.get_data_owned();
+                Err(Error::UnexpectedTrailingBytes(surplus))
             }
         }
     }
@@ -487,7 +514,7 @@ mod prop_tests {
     use buffer_sv2::Buffer as IsBuffer;
     #[cfg(feature = "noise_sv2")]
     use framing_sv2::framing::Frame;
-    use framing_sv2::framing::Sv2Frame;
+    use framing_sv2::{framing::Sv2Frame, header::Header};
     #[cfg(feature = "noise_sv2")]
     use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
     #[cfg(feature = "noise_sv2")]
@@ -637,6 +664,127 @@ mod prop_tests {
         }
 
         TestResult::from_bool(missing_bytes_count > 0)
+    }
+
+    /// Verifies that over-filling the buffer (calling `writable` twice before `next_frame`)
+    /// surfaces `UnexpectedTrailingBytes`, drains the buffer, and leaves the decoder usable.
+    #[test]
+    fn test_decoder_excess_bytes_drains_and_recovers() {
+        let msg = TestMessage { value: 42 };
+        let frame = Sv2Frame::<TestMessage, Slice>::from_message(msg.clone(), 0, 0, false).unwrap();
+        let mut encoder = Encoder::<TestMessage>::new();
+        let encoded = encoder.encode(frame).unwrap();
+        let encoded: &[u8] = encoded.as_ref();
+
+        let mut decoder = StandardDecoder::<TestMessage>::new();
+        decoder.writable().copy_from_slice(&encoded[..Header::SIZE]);
+        assert!(matches!(
+            decoder.next_frame(),
+            Err(crate::Error::MissingBytes(_))
+        ));
+        decoder.writable().copy_from_slice(&encoded[Header::SIZE..]);
+
+        // Write past the slice `writable` returned.
+        const SURPLUS: usize = 4;
+        decoder
+            .buffer
+            .get_writable(SURPLUS)
+            .copy_from_slice(&[0xff; SURPLUS]);
+
+        match decoder.next_frame() {
+            Err(crate::Error::UnexpectedTrailingBytes(n)) => assert_eq!(n, SURPLUS),
+            Ok(_) => panic!("expected UnexpectedTrailingBytes, got a frame"),
+            Err(e) => panic!("expected UnexpectedTrailingBytes, got {e:?}"),
+        }
+
+        let mut decoded =
+            decode_frame(&mut decoder, encoded, None).expect("decoder should recover");
+        let decoded_msg: TestMessage = binary_sv2::from_bytes(decoded.payload()).unwrap();
+        assert_eq!(decoded_msg, msg);
+    }
+
+    /// Verifies that over-filling the noise buffer (writing past the slice returned by
+    /// `writable`) surfaces `UnexpectedTrailingBytes` rather than underflowing the
+    /// `missing_noise_b` arithmetic, in the handshake state and in both transport phases
+    /// (encrypted header pending, payload pending).
+    #[cfg(feature = "noise_sv2")]
+    #[test]
+    fn test_noise_decoder_excess_bytes_do_not_underflow() {
+        const SURPLUS: usize = 4;
+        const MSG_LEN: usize = 32;
+
+        // Handshake state.
+        let mut state = State::NotInitialized(MSG_LEN);
+        let mut decoder = StandardNoiseDecoder::<TestMessage>::new();
+        assert!(matches!(
+            decoder.next_frame(&mut state),
+            Err(crate::Error::MissingBytes(MSG_LEN))
+        ));
+        decoder.writable().fill(0);
+        decoder
+            .noise_buffer
+            .get_writable(SURPLUS)
+            .copy_from_slice(&[0xff; SURPLUS]);
+        match decoder.next_frame(&mut state) {
+            Err(crate::Error::UnexpectedTrailingBytes(n)) => assert_eq!(n, SURPLUS),
+            other => panic!("expected UnexpectedTrailingBytes, got {other:?}"),
+        }
+        assert_eq!(decoder.writable_len(), MSG_LEN);
+        decoder.writable().fill(0);
+        assert!(decoder.next_frame(&mut state).is_ok());
+
+        // Transport state, before the encrypted header has been decrypted.
+        let (_, mut receiver) = make_transport_state_pair();
+        let mut decoder = StandardNoiseDecoder::<TestMessage>::new();
+        assert!(matches!(
+            decoder.next_frame(&mut receiver),
+            Err(crate::Error::MissingBytes(_))
+        ));
+        decoder.writable().fill(0);
+        decoder
+            .noise_buffer
+            .get_writable(SURPLUS)
+            .copy_from_slice(&[0xff; SURPLUS]);
+        match decoder.next_frame(&mut receiver) {
+            Err(crate::Error::UnexpectedTrailingBytes(n)) => assert_eq!(n, SURPLUS),
+            other => panic!("expected UnexpectedTrailingBytes, got {other:?}"),
+        }
+
+        // Transport state, once the encrypted header has been decrypted.
+        let (mut sender, mut receiver) = make_transport_state_pair();
+        let sv2_frame =
+            Sv2Frame::<TestMessage, Slice>::from_message(TestMessage { value: 42 }, 0, 0, false)
+                .unwrap();
+        let mut encoder = NoiseEncoder::<TestMessage>::new();
+        let encrypted = encoder.encode(Frame::Sv2(sv2_frame), &mut sender).unwrap();
+        let encrypted: &[u8] = encrypted.as_ref();
+
+        let mut decoder = StandardNoiseDecoder::<TestMessage>::new();
+        let mut offset = 0;
+        // Two rounds: prime the encrypted header size, then feed the encrypted header.
+        for _ in 0..2 {
+            let w = decoder.writable();
+            let n = w.len().min(encrypted.len() - offset);
+            w[..n].copy_from_slice(&encrypted[offset..offset + n]);
+            offset += n;
+            assert!(matches!(
+                decoder.next_frame(&mut receiver),
+                Err(crate::Error::MissingBytes(_))
+            ));
+        }
+
+        // The decoder now wants the payload: write it, then over-fill.
+        let w = decoder.writable();
+        let n = w.len().min(encrypted.len() - offset);
+        w[..n].copy_from_slice(&encrypted[offset..offset + n]);
+        decoder
+            .noise_buffer
+            .get_writable(SURPLUS)
+            .copy_from_slice(&[0xff; SURPLUS]);
+        match decoder.next_frame(&mut receiver) {
+            Err(crate::Error::UnexpectedTrailingBytes(n)) => assert_eq!(n, SURPLUS),
+            other => panic!("expected UnexpectedTrailingBytes, got {other:?}"),
+        }
     }
 
     /// Verifies that a single decoder instance correctly decodes two consecutive independent

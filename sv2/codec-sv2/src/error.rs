@@ -55,6 +55,11 @@ pub enum Error {
 
     /// Unexpected state in the Noise protocol.
     UnexpectedNoiseState,
+
+    /// The decoder buffer held a complete frame followed by the given number of surplus bytes.
+    ///
+    /// The buffered data, including that complete frame, has already been discarded.
+    UnexpectedTrailingBytes(usize),
 }
 
 impl fmt::Display for Error {
@@ -76,7 +81,7 @@ impl fmt::Display for Error {
                 f,
                 "This noise handshake step can not be executed by a responder"
             ),
-            MissingBytes(u) => write!(f, "Missing `{u}` Noise bytes"),
+            MissingBytes(u) => write!(f, "Missing `{u}` bytes to complete the frame"),
             #[cfg(feature = "noise_sv2")]
             NoiseSv2Error(e) => match e {
                 NoiseError::InvalidCertificate(msg) => {
@@ -93,6 +98,12 @@ impl fmt::Display for Error {
             ),
             UnexpectedNoiseState => {
                 write!(f, "Noise state is incorrect")
+            }
+            UnexpectedTrailingBytes(u) => {
+                write!(
+                    f,
+                    "Buffer held `{u}` bytes beyond the end of the frame; buffered data discarded"
+                )
             }
         }
     }
