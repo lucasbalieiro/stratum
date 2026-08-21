@@ -40,6 +40,16 @@ pub enum SizeHint {
     Exact,
 }
 
+impl core::fmt::Display for SizeHint {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Missing(n) => write!(f, "missing {n} bytes to complete the frame"),
+            Self::Surplus(n) => write!(f, "{n} bytes buffered past the end of the frame"),
+            Self::Exact => write!(f, "exactly one complete frame"),
+        }
+    }
+}
+
 /// Represents either an Sv2 frame or a handshake frame.
 ///
 /// A wrapper used when generic reference to a frame is needed, but the kind of frame ([`Sv2Frame`]
