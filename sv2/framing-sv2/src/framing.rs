@@ -18,13 +18,27 @@
 use crate::{header::Header, Error};
 use alloc::vec::Vec;
 use binary_sv2::{to_writer, GetSize, Serialize};
-use core::convert::TryFrom;
+use core::{cmp::Ordering, convert::TryFrom};
 
 #[cfg(not(feature = "with_buffer_pool"))]
 type Slice = Vec<u8>;
 
 #[cfg(feature = "with_buffer_pool")]
 type Slice = buffer_sv2::Slice;
+
+/// Describes how the length of a byte slice relates to the frame size declared by its [`Header`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeHint {
+    /// The slice does not hold a complete frame yet, and the given number of bytes are still
+    /// missing, either from the [`Header`] or from the payload it declares.
+    Missing(usize),
+
+    /// The slice holds a complete frame followed by the given number of surplus bytes.
+    Surplus(usize),
+
+    /// The slice holds exactly one complete frame.
+    Exact,
+}
 
 /// Represents either an Sv2 frame or a handshake frame.
 ///
@@ -116,17 +130,14 @@ impl<T: Serialize + GetSize, B: AsMut<[u8]> + AsRef<[u8]>> Sv2Frame<T, B> {
     /// Tries to build a [`Sv2Frame`] from raw bytes.
     ///
     /// It assumes the raw bytes represent a serialized [`Sv2Frame`] frame (`Self.serialized`).
-    /// Returns a [`Sv2Frame`] on success, or the number of the bytes needed to complete the frame
-    /// as an error. `Self.serialized` is [`Some`], but nothing is assumed or checked about the
+    /// Returns a [`Sv2Frame`] on success, or the [`SizeHint`] describing the size mismatch as an
+    /// error. `Self.serialized` is [`Some`], but nothing is assumed or checked about the
     /// correctness of the payload.
     #[inline]
-    pub fn from_bytes(mut bytes: B) -> Result<Self, isize> {
-        let hint = Self::size_hint(bytes.as_mut());
-
-        if hint == 0 {
-            Ok(Self::from_bytes_unchecked(bytes))
-        } else {
-            Err(hint)
+    pub fn from_bytes(bytes: B) -> Result<Self, SizeHint> {
+        match Self::size_hint(bytes.as_ref()) {
+            SizeHint::Exact => Ok(Self::from_bytes_unchecked(bytes)),
+            hint => Err(hint),
         }
     }
 
@@ -142,29 +153,21 @@ impl<T: Serialize + GetSize, B: AsMut<[u8]> + AsRef<[u8]>> Sv2Frame<T, B> {
         }
     }
 
-    /// After parsing `bytes` into a [`Header`], this function helps to determine if the
-    /// `msg_length` field is correctly representing the size of the frame.
-    /// - Returns `0` if the byte slice is of the expected size according to the header.
-    /// - Returns a negative value if the byte slice is shorter than expected; this value represents
-    ///   how many bytes are missing.
-    /// - Returns a positive value if the byte slice is longer than expected; this value indicates
-    ///   the surplus of bytes beyond the expected size.
+    /// Compares the size of `bytes` against the expected frame size, i.e. [`Header::SIZE`] plus
+    /// the `msg_length` declared in the parsed [`Header`].
+    ///
+    /// If `bytes` is too short to contain a full [`Header`], the returned [`SizeHint::Missing`]
+    /// only accounts for the bytes needed to complete the header.
     #[inline]
-    pub fn size_hint(bytes: &[u8]) -> isize {
-        match Header::from_bytes(bytes) {
-            Err(_) => {
-                // Returns how many bytes are missing from the expected frame size
-                (Header::SIZE - bytes.len()) as isize
-            }
-            Ok(header) => {
-                if bytes.len() - Header::SIZE == header.len() {
-                    // expected frame size confirmed
-                    0
-                } else {
-                    // Returns how many excess bytes are beyond the expected frame size
-                    (bytes.len() - Header::SIZE) as isize + header.len() as isize
-                }
-            }
+    pub fn size_hint(bytes: &[u8]) -> SizeHint {
+        let Ok(header) = Header::from_bytes(bytes) else {
+            return SizeHint::Missing(Header::SIZE.saturating_sub(bytes.len()));
+        };
+        let expected = Header::SIZE + header.len();
+        match bytes.len().cmp(&expected) {
+            Ordering::Less => SizeHint::Missing(expected - bytes.len()),
+            Ordering::Equal => SizeHint::Exact,
+            Ordering::Greater => SizeHint::Surplus(bytes.len() - expected),
         }
     }
 
@@ -245,12 +248,8 @@ impl HandShakeFrame {
 
     /// Builds a [`HandShakeFrame`] from raw bytes. Nothing is assumed or checked about the
     /// correctness of the payload.
-    pub fn from_bytes(bytes: Slice) -> Result<Self, isize> {
-        Ok(Self::from_bytes_unchecked(bytes))
-    }
-
     #[inline]
-    pub fn from_bytes_unchecked(bytes: Slice) -> Self {
+    pub fn from_bytes(bytes: Slice) -> Self {
         Self { payload: bytes }
     }
 
@@ -311,7 +310,19 @@ mod tests {
     #[test]
     fn test_size_hint() {
         let h = Sv2Frame::<T, Vec<u8>>::size_hint(&[0, 128, 30, 46, 0, 0][..]);
-        assert!(h == 46);
+        assert_eq!(h, SizeHint::Missing(46));
+    }
+
+    #[test]
+    fn test_size_hint_empty_payload() {
+        assert_eq!(
+            Sv2Frame::<T, Vec<u8>>::size_hint(&[0, 0, 1, 0, 0, 0][..]),
+            SizeHint::Exact
+        );
+        assert_eq!(
+            Sv2Frame::<T, Vec<u8>>::size_hint(&[0, 0, 1, 0, 0, 0, 9, 9, 9][..]),
+            SizeHint::Surplus(3)
+        );
     }
 
     #[derive(Debug, Clone)]
@@ -448,8 +459,9 @@ mod tests {
 
         let hint = Sv2Frame::<TestMessage, Vec<u8>>::size_hint(&bytes);
         assert_eq!(
-            hint, 0,
-            "size_hint should return 0 when bytes match expected frame size exactly"
+            hint,
+            SizeHint::Exact,
+            "size_hint should return Exact when bytes match expected frame size exactly"
         );
     }
 
@@ -458,15 +470,10 @@ mod tests {
         let bytes: Vec<u8> = bytes.iter().take(Header::SIZE - 1).copied().collect();
 
         let hint = Sv2Frame::<TestMessage, Vec<u8>>::size_hint(&bytes);
-        let expected = (Header::SIZE - bytes.len()) as isize;
-        assert!(
-            hint > 0,
-            "size_hint should be positive when header is incomplete"
-        );
         assert_eq!(
-            hint, expected,
-            "size_hint should return missing bytes count: expected {}, got {}",
-            expected, hint
+            hint,
+            SizeHint::Missing(Header::SIZE - bytes.len()),
+            "size_hint should return the bytes missing to complete the header"
         );
     }
 
@@ -547,8 +554,7 @@ mod tests {
     fn prop_handshake_frame_from_bytes(payload: Vec<u8>) {
         let payload: Vec<u8> = payload.iter().take(1000).copied().collect();
 
-        let frame = HandShakeFrame::from_bytes(payload.clone().into())
-            .expect("HandShakeFrame::from_bytes should succeed for any valid payload");
+        let frame = HandShakeFrame::from_bytes(payload.clone().into());
 
         let recovered = frame.get_payload_when_handshaking();
         assert_eq!(
@@ -608,7 +614,6 @@ mod tests {
         );
     }
 
-    #[ignore = "size_hint semantics are broken (see https://github.com/stratum-mining/stratum/issues/2086)"]
     #[quickcheck]
     fn prop_size_hint_truncated_payload(msg_length: ValidU24, cut: u16) {
         let msg_type = 0x01u8;
@@ -629,19 +634,13 @@ mod tests {
 
         let hint = Sv2Frame::<TestMessage, Vec<u8>>::size_hint(&bytes);
 
-        assert!(
-            hint < 0,
-            "size_hint should be negative when payload is truncated"
-        );
-
         assert_eq!(
             hint,
-            -(missing as isize),
+            SizeHint::Missing(missing),
             "size_hint should equal missing bytes"
         );
     }
 
-    #[ignore = "size_hint semantics are broken (see https://github.com/stratum-mining/stratum/issues/2086)"]
     #[quickcheck]
     fn prop_size_hint_extra_bytes(msg_length: ValidU24, extra: u16) {
         let msg_type = 0x01u8;
@@ -656,55 +655,35 @@ mod tests {
 
         let hint = Sv2Frame::<TestMessage, Vec<u8>>::size_hint(&bytes);
 
-        assert!(
-            hint > 0,
-            "size_hint should be positive when extra bytes exist"
-        );
-
         assert_eq!(
-            hint, extra as isize,
+            hint,
+            SizeHint::Surplus(extra),
             "size_hint should equal number of extra bytes"
         );
     }
 
-    #[ignore = "size_hint semantics are broken (see https://github.com/stratum-mining/stratum/issues/2086)"]
     #[quickcheck]
-    fn prop_size_hint_matches_delta(msg_length: ValidU24, delta: i16) {
-        let msg_type = 0x01u8;
-        let ext = 0u16;
-
-        let header = Header::from_len(msg_length.0, msg_type, ext).unwrap();
-
-        let expected = msg_length.0 as isize;
-        let actual = (expected + delta as isize).max(0) as usize;
-
-        let mut bytes = vec![0u8; Header::SIZE + actual];
-        binary_sv2::to_writer(header, &mut bytes[..Header::SIZE]).unwrap();
-
-        let hint = Sv2Frame::<TestMessage, Vec<u8>>::size_hint(&bytes);
-
-        assert_eq!(
-            hint,
-            actual as isize - expected,
-            "size_hint must equal actual - expected payload size"
-        );
-    }
-
-    #[ignore = "size_hint semantics are broken (see https://github.com/stratum-mining/stratum/issues/2086)"]
-    #[quickcheck]
-    fn prop_size_hint_monotonic_growth(msg_length: ValidU24) {
-        let header = Header::from_len(msg_length.0, 1, 0).unwrap();
-        let total = Header::SIZE + msg_length.0 as usize;
+    fn prop_size_hint_incremental_arrival(msg_length: ValidU24) {
+        let payload_len = (msg_length.0 % 4096) as usize;
+        let header = Header::from_len(payload_len as u32, 1, 0).unwrap();
+        let total = Header::SIZE + payload_len;
 
         let mut full = vec![0u8; total];
         binary_sv2::to_writer(header, &mut full[..Header::SIZE]).unwrap();
 
-        let mut prev = isize::MIN;
-
-        for i in 0..=total {
+        for i in 0..total {
             let hint = Sv2Frame::<TestMessage, Vec<u8>>::size_hint(&full[..i]);
-            assert!(hint >= prev, "hint should increase as more bytes arrive");
-            prev = hint;
+            let expected = if i < Header::SIZE {
+                SizeHint::Missing(Header::SIZE - i)
+            } else {
+                SizeHint::Missing(total - i)
+            };
+            assert_eq!(hint, expected, "hint mismatch with {i} of {total} bytes");
         }
+
+        assert_eq!(
+            Sv2Frame::<TestMessage, Vec<u8>>::size_hint(&full),
+            SizeHint::Exact
+        );
     }
 }
