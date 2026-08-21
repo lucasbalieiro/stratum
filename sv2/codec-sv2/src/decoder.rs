@@ -183,7 +183,7 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
         let hint = if IsBuffer::len(&self.sv2_buffer) < SV2_FRAME_HEADER_SIZE {
             let buffered = IsBuffer::len(&self.noise_buffer);
             if buffered > ENCRYPTED_SV2_FRAME_HEADER_SIZE {
-                        return Err(self.reset_after_surplus(
+                return Err(self.reset_after_surplus(
                     buffered - ENCRYPTED_SV2_FRAME_HEADER_SIZE,
                     ENCRYPTED_SV2_FRAME_HEADER_SIZE,
                 ));
@@ -193,14 +193,14 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
             let src = self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE);
             let header = Header::from_bytes(src)?;
             let encrypted_len = header.encrypted_len();
-                    let buffered = IsBuffer::len(&self.noise_buffer);
-                    if buffered > encrypted_len {
-                        return Err(self.reset_after_surplus(
-                            buffered - encrypted_len,
-                            ENCRYPTED_SV2_FRAME_HEADER_SIZE,
-                        ));
-                    }
-                    encrypted_len - buffered
+            let buffered = IsBuffer::len(&self.noise_buffer);
+            if buffered > encrypted_len {
+                return Err(self.reset_after_surplus(
+                    buffered - encrypted_len,
+                    ENCRYPTED_SV2_FRAME_HEADER_SIZE,
+                ));
+            }
+            encrypted_len - buffered
         };
 
         match hint {
