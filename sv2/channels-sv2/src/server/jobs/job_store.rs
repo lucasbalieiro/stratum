@@ -26,20 +26,20 @@ pub(crate) const MAX_FUTURE_JOBS: usize = 16;
 
 /// Maximum number of past jobs a server channel retains under the current chain tip.
 ///
-/// Past jobs exist for late-share validation, so the cap must stay nonzero. A share against an
-/// evicted job is rejected as `InvalidJobId` even though it would otherwise have been accepted
-/// and credited — a bounded loss of creditable work, the price of bounding memory against a
-/// malicious template-distribution peer streaming non-future templates while withholding
-/// `SetNewPrevHash`.
+/// Past jobs serve late-share validation, so the cap must stay nonzero. On overflow the oldest is
+/// evicted and a share against it is rejected as `InvalidJobId` — a bounded loss of creditable
+/// work, the price of bounding memory against a hostile peer.
 ///
-/// 50 buys ample headroom over the reachable submit depth (a miner abandons a job once the next
-/// one arrives, so late shares realistically target the last 1-2 jobs) at a small measured
-/// memory cost — see the load-test data in PR #2290.
+/// The cap is a retention *window* — `cap / job rate` — and the rate belongs to the deployment.
+/// Measurement bounded the requirement at ~16 s (PR #2307), so 16 covers the fastest configurable
+/// rate of one job per second. Operators who know their own interval `T` should set
+/// `ceil(16 s / T)`: 3 at a typical 6 s interval, 13.5 kB per channel against 72 kB (PR #2290).
 ///
-/// This is only the default. The cap is really a retention window — `cap / job rate` — and the
-/// job rate belongs to the deployment, so channel constructors accept a `max_past_jobs`
-/// override and fall back to this value when given `None` or `Some(0)`.
-pub(crate) const MAX_PAST_JOBS: usize = 50;
+/// Channels accepting `SetCustomMiningJob` are the exception — each accepted job retires the
+/// active one, so the rate is the client's. Size against the rate the pool permits, or keep 16.
+///
+/// Constructors take a `max_past_jobs` override, falling back here on `None`/`Some(0)`.
+pub(crate) const MAX_PAST_JOBS: usize = 16;
 
 /// Internal implementation for tracking mining job states in SV2 server channels.
 ///
