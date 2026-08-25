@@ -17,11 +17,6 @@ pub enum TlvError {
     ///
     /// Contains the underlying binary_sv2::Error.
     DecodingError(binary_sv2::Error),
-
-    /// Failed to construct a StandardSv2Frame from bytes.
-    ///
-    /// Contains the error code returned by `Sv2Frame::from_bytes`.
-    FrameConstructionFailed(isize),
 }
 
 impl fmt::Display for TlvError {
@@ -34,13 +29,6 @@ impl fmt::Display for TlvError {
             ),
             TlvError::EncodingError(err) => write!(f, "Failed to encode TLV data: {:?}", err),
             TlvError::DecodingError(err) => write!(f, "Failed to decode TLV data: {:?}", err),
-            TlvError::FrameConstructionFailed(code) => {
-                write!(
-                    f,
-                    "Failed to construct Sv2Frame from bytes (error code: {})",
-                    code
-                )
-            }
         }
     }
 }
@@ -55,8 +43,5 @@ mod tests {
         let err = TlvError::BufferTooShort(5, 10);
         assert!(err.to_string().contains("5"));
         assert!(err.to_string().contains("10"));
-
-        let err = TlvError::FrameConstructionFailed(-1);
-        assert!(err.to_string().contains("-1"));
     }
 }
