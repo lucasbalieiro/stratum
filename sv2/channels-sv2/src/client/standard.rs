@@ -15,7 +15,7 @@ use crate::{
     extranonce_manager::ExtranoncePrefix,
     merkle_root::merkle_root_from_path,
     target::{bytes_to_hex, u256_to_block_hash},
-    MAX_EXTRANONCE_LEN, VERSION_ROLLING_MASK,
+    MAX_EXTRANONCE_LEN, MAX_FUTURE_BLOCK_TIME, VERSION_ROLLING_MASK,
 };
 use alloc::{collections::VecDeque, format, string::String};
 use binary_sv2::Sv2OptionOwned;
@@ -402,7 +402,11 @@ impl StandardChannel {
     ///
     /// - Checks if the share refers to an active or past job; rejects stale jobs.
     /// - Verifies the share meets the channel target, is not a duplicate, is not stale, and has
-    ///   `ntime` >= the chain tip's `min_ntime`.
+    ///   `ntime` >= the chain tip's `min_ntime` as well as the job's own `min_ntime` (an
+    ///   immediately-active job may carry a `min_ntime` later than the chain tip's minimum, so
+    ///   the effective lower bound is the larger of the two). Also rejects `ntime` above the
+    ///   chain tip's `min_ntime + MAX_FUTURE_BLOCK_TIME` (see [`MAX_FUTURE_BLOCK_TIME`] for how
+    ///   this clockless upper bound relates to the spec's elapsed-time window).
     /// - Updates share accounting state based on validation result.
     /// - Returns whether the share is valid or resulted in a block being found.
     /// - Returns error describing why share is not valid.
@@ -454,6 +458,25 @@ impl StandardChannel {
             return Err(ShareValidationError::Invalid(
                 ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
             ));
+        }
+
+        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at
+        // chain-tip receipt, since this crate has no clock (see MAX_FUTURE_BLOCK_TIME)
+        if share.ntime > chain_tip.min_ntime().saturating_add(MAX_FUTURE_BLOCK_TIME) {
+            return Err(ShareValidationError::Invalid(
+                ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
+            ));
+        }
+
+        // an immediately-active job carries its own min_ntime, which may be later than the
+        // chain tip's minimum; jobs activated from the future queue have it overwritten with
+        // the SetNewPrevHash timestamp, making this check redundant there (and harmless)
+        if let Some(job_min_ntime) = job.0.min_ntime.clone().into_inner() {
+            if share.ntime < job_min_ntime {
+                return Err(ShareValidationError::Invalid(
+                    ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
+                ));
+            }
         }
 
         // Only the non-rollable version bits are compared: `!VERSION_ROLLING_MASK` zeroes
@@ -1525,6 +1548,89 @@ mod tests {
     }
 
     #[test]
+    fn test_share_validation_ntime_below_job_min_ntime() {
+        // Regression test: an immediately-active job carries its own min_ntime, which may be
+        // later than the chain tip's minimum. A share in the gap
+        // (chain_tip.min_ntime <= ntime < job.min_ntime) must be rejected.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+        );
+
+        let merkle_root = [
+            189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84, 56,
+            86, 147, 71, 243, 44, 18, 107, 167, 169, 169, 66, 186, 98,
+        ];
+
+        // activate a chain tip at nTime t via a future job
+        let tip_ntime: u32 = 1745596930;
+        channel.on_new_mining_job(NewMiningJob {
+            channel_id,
+            job_id: 1,
+            merkle_root: merkle_root.into(),
+            version: 536870912,
+            min_ntime: Sv2Option::new(None),
+        });
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: tip_ntime,
+            })
+            .unwrap();
+
+        // install an immediately-active job whose own min_ntime is later than the tip's
+        let job_min_ntime = tip_ntime + 3;
+        channel.on_new_mining_job(NewMiningJob {
+            channel_id,
+            job_id: 2,
+            merkle_root: merkle_root.into(),
+            version: 536870912,
+            min_ntime: Sv2Option::new(Some(job_min_ntime)),
+        });
+
+        // a share in the gap passes the chain-tip bound but not the job's own bound
+        let share_in_gap = SubmitSharesStandardOwned {
+            channel_id,
+            sequence_number: 0,
+            job_id: 2,
+            nonce: 3,
+            ntime: job_min_ntime - 1,
+            version: 536870912,
+        };
+        let res = channel.validate_share(share_in_gap);
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // at the job's min_ntime the share is accepted (channel target is permissive)
+        let share_at_job_min_ntime = SubmitSharesStandardOwned {
+            channel_id,
+            sequence_number: 1,
+            job_id: 2,
+            nonce: 3,
+            ntime: job_min_ntime,
+            version: 536870912,
+        };
+        let res = channel.validate_share(share_at_job_min_ntime);
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+    }
+    #[test]
     fn test_on_new_group_channel_job_invalid_coinbase() {
         // Regression test for a malicious/malformed upstream coinbase: empty prefix and suffix
         // must produce an error instead of panicking.
@@ -1566,5 +1672,75 @@ mod tests {
         // no job must have been stored
         assert_eq!(channel.get_future_jobs_count(), 0);
         assert_eq!(channel.get_active_job(), None);
+    }
+
+    #[test]
+    fn test_share_validation_ntime_above_max_future_block_time() {
+        // Regression test: a share ntime beyond the chain tip's min_ntime +
+        // MAX_FUTURE_BLOCK_TIME would put a consensus-invalid timestamp in the block header,
+        // so it must be rejected; ntime exactly on the bound is still accepted.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+        );
+
+        channel.on_new_mining_job(NewMiningJob {
+            channel_id,
+            job_id: 1,
+            merkle_root: [
+                189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84,
+                56, 86, 147, 71, 243, 44, 18, 107, 167, 169, 169, 66, 186, 98,
+            ]
+            .into(),
+            version: 536870912,
+            min_ntime: Sv2Option::new(None),
+        });
+
+        let tip_ntime: u32 = 1745596930;
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: tip_ntime,
+            })
+            .unwrap();
+
+        let share = |sequence_number: u32, ntime: u32| SubmitSharesStandardOwned {
+            channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce: 3,
+            ntime,
+            version: 536870912,
+        };
+
+        // one second above the bound: rejected before any PoW evaluation
+        let res = channel.validate_share(share(0, tip_ntime + crate::MAX_FUTURE_BLOCK_TIME + 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // u32::MAX is likewise rejected (the bound saturates instead of wrapping)
+        let res = channel.validate_share(share(1, u32::MAX));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // exactly on the bound the share is accepted (channel target is permissive)
+        let res = channel.validate_share(share(2, tip_ntime + crate::MAX_FUTURE_BLOCK_TIME));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
     }
 }

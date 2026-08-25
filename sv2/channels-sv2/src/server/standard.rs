@@ -44,7 +44,7 @@ use crate::{
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
     target::{bytes_to_hex, hash_rate_to_target, u256_to_block_hash},
-    MAX_EXTRANONCE_LEN, VERSION_ROLLING_MASK,
+    MAX_EXTRANONCE_LEN, MAX_FUTURE_BLOCK_TIME, VERSION_ROLLING_MASK,
 };
 use bitcoin::{
     absolute::LockTime,
@@ -67,7 +67,7 @@ use mining_sv2::{
 };
 use std::collections::HashMap;
 use template_distribution_sv2::{NewTemplateOwned, SetNewPrevHashOwned as SetNewPrevHash};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Abstraction of a Sv2 Standard Channel.
 ///
@@ -230,7 +230,10 @@ impl StandardChannel {
             job_id_to_target: HashMap::new(),
             nominal_hashrate,
             stable_hashrate: false,
-            share_accounting: ShareAccounting::new(share_batch_size),
+            share_accounting: ShareAccounting::new(
+                share_batch_size,
+                crate::seen_shares_budget(expected_share_per_minute as f64),
+            ),
             expected_share_per_minute,
             job_store: JobStore::new(),
             job_factory,
@@ -558,8 +561,15 @@ impl StandardChannel {
 
     /// Updates the channel state with a new `SetNewPrevHash` message.
     ///
-    /// If there are no future jobs, returns an error.
     /// If there are future jobs, the active job is set to the job with the given `template_id`.
+    /// If future jobs are queued but none matches the `template_id`, returns an error, leaving
+    /// the chain tip untouched.
+    ///
+    /// If no future jobs are queued, the peer is not conforming to the Template Distribution
+    /// Protocol, which requires at least one future `NewTemplate` before every `SetNewPrevHash`.
+    /// The message is still applied rather than rejected: its chain-tip fields are self-contained
+    /// and remain usable, so discarding them would only leave this channel validating shares
+    /// against a dead tip. The active job (if any) is marked stale and the chain tip is updated.
     ///
     /// All past jobs are cleared.
     pub fn on_set_new_prev_hash(
@@ -568,7 +578,24 @@ impl StandardChannel {
     ) -> Result<(), StandardChannelError> {
         match self.job_store.has_future_jobs() {
             false => {
-                return Err(StandardChannelError::TemplateIdNotFound);
+                // a chain-tip update with no queued future template means the peer broke
+                // the protocol, but the tip itself is still usable, so recover instead of
+                // leaving this channel committed to a dead prev_hash.
+                warn!(
+                    "SetNewPrevHash with no queued future template: non-conforming Template \
+                     Distribution peer, recovering the chain tip"
+                );
+                //
+                // demote the previously-active job to past so that the subsequent
+                // mark_past_jobs_as_stale call moves it into the stale set. without this,
+                // a late share for the still-active old job would skip the stale check in
+                // validate_share and panic on the missing job_id_to_target entry that we
+                // just cleared.
+                self.job_store.deactivate_job();
+                self.job_store.mark_past_jobs_as_stale();
+                // there is no active job in this branch, so any previous job target
+                // mappings are obsolete after the chain tip update.
+                self.job_id_to_target.clear();
             }
             // try to activate the future job, and also mark past jobs as stale
             true => {
@@ -605,12 +632,21 @@ impl StandardChannel {
     /// Validates a submitted share and updates accounting state.
     ///
     /// Returns the result of share validation, including block found, valid share, duplicate, or
-    /// error if the share is stale, does not meet target, or has ntime below the chain tip's
-    /// `min_ntime`.
+    /// error if the share is stale, does not meet target, or has ntime outside
+    /// `[min_ntime, min_ntime + MAX_FUTURE_BLOCK_TIME]` relative to the chain tip (see
+    /// [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the spec's
+    /// elapsed-time window).
     pub fn validate_share(
         &mut self,
         share: SubmitSharesStandardOwned,
     ) -> Result<ShareValidationResult, ShareValidationError> {
+        // the accepted-share dedup cache is a hard budget on servers: forgetting a
+        // still-valid hash would re-enable duplicate-share replay, so once the budget is hit
+        // the channel must be closed by the embedding application
+        if self.share_accounting.is_seen_shares_budget_exhausted() {
+            return Err(ShareValidationError::SeenSharesBudgetExhausted);
+        }
+
         let job_id = share.job_id;
 
         // check if job_id is active job
@@ -675,6 +711,16 @@ impl StandardChannel {
         let nbits = CompactTarget::from_consensus(chain_tip.nbits());
 
         if share.ntime < chain_tip.min_ntime() {
+            self.share_accounting
+                .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE);
+            return Err(ShareValidationError::Invalid(
+                ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
+            ));
+        }
+
+        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at
+        // chain-tip receipt, since this crate has no clock (see MAX_FUTURE_BLOCK_TIME)
+        if share.ntime > chain_tip.min_ntime().saturating_add(MAX_FUTURE_BLOCK_TIME) {
             self.share_accounting
                 .increment_rejected_shares(ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE);
             return Err(ShareValidationError::Invalid(
@@ -1607,7 +1653,11 @@ mod tests {
         }];
 
         // network target: 000000000000d7c0000000000000000000000000000000000000000000000000
-        let ntime = 1745596910;
+        // anchor the tip within the pre-mined share's consensus window: the share was
+        // mined with ntime 1745611105, and validation rejects ntime beyond the tip's
+        // min_ntime + MAX_FUTURE_BLOCK_TIME (the header hash does not depend on the tip's
+        // timestamp, so the pre-mined vectors stay valid)
+        let ntime = 1745611105 - 60;
         let prev_hash = [
             154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
             162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
@@ -1706,7 +1756,11 @@ mod tests {
             script_pubkey: script,
         }];
 
-        let ntime = 1745596910;
+        // anchor the tip within the pre-mined share's consensus window: the share was
+        // mined with ntime 1745611105, and validation rejects ntime beyond the tip's
+        // min_ntime + MAX_FUTURE_BLOCK_TIME (the header hash does not depend on the tip's
+        // timestamp, so the pre-mined vectors stay valid)
+        let ntime = 1745611105 - 60;
         let prev_hash = [
             154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
             162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
@@ -1814,7 +1868,11 @@ mod tests {
             script_pubkey: script,
         }];
 
-        let ntime = 1745596910;
+        // anchor the tip within the pre-mined share's consensus window: the share was
+        // mined with ntime 1745611105, and validation rejects ntime beyond the tip's
+        // min_ntime + MAX_FUTURE_BLOCK_TIME (the header hash does not depend on the tip's
+        // timestamp, so the pre-mined vectors stay valid)
+        let ntime = 1745611105 - 60;
         let prev_hash = [
             154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
             162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
@@ -2127,12 +2185,12 @@ mod tests {
     }
 
     #[test]
-    fn test_set_new_prev_hash_without_future_jobs_preserves_state() {
-        // Regression test: when on_set_new_prev_hash is called with no future jobs to
-        // activate, it must return an error WITHOUT corrupting channel state. Previously
-        // the function cleared job_id_to_target before checking for future jobs, so a
-        // caller that treated the error as recoverable would crash on the next share at
-        // the `expect("job target must exist")` site.
+    fn test_set_new_prev_hash_without_future_jobs_updates_chain_tip() {
+        // Regression test: a SetNewPrevHash with no queued future job means the peer broke the
+        // Template Distribution Protocol, which requires at least one future NewTemplate
+        // beforehand. The channel must still recover from it — record the new chain tip and mark
+        // the previously active job stale, rather than reject the message and keep building jobs
+        // on a dead prev_hash.
         let standard_channel_id = 1;
         let user_identity = "user_identity".to_string();
 
@@ -2209,27 +2267,31 @@ mod tests {
         let active_job_id = active_standard_job.get_job_id();
         assert!(!standard_channel.job_store.has_future_jobs());
 
-        // No future jobs available -> on_set_new_prev_hash must return Err.
+        // No future jobs queued -> on_set_new_prev_hash must still record the chain tip.
+        let new_prev_hash: binary_sv2::U256Owned = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ]
+        .into();
         let snph = SetNewPrevHashTdp {
             template_id: 999,
-            prev_hash: [
-                200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
-                205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
-            ]
-            .into(),
+            prev_hash: new_prev_hash.clone(),
             header_timestamp: ntime + 600,
             n_bits,
             target: [0xff; 32].into(),
         };
-        let res = standard_channel.on_set_new_prev_hash(snph);
-        assert!(matches!(res, Err(StandardChannelError::TemplateIdNotFound)));
+        standard_channel.on_set_new_prev_hash(snph).unwrap();
 
-        // Channel state must be preserved: active job still active, target entry intact.
-        // A subsequent share submission for the still-active job must NOT panic on a
-        // missing job_id_to_target entry. The share itself does not meet target, so we
-        // expect DoesNotMeetTarget — the load-bearing assertion is that it returns
-        // without panicking.
-        let share_low_diff = SubmitSharesStandardOwned {
+        let chain_tip = standard_channel.get_chain_tip().unwrap();
+        assert_eq!(chain_tip.prev_hash(), new_prev_hash);
+        assert_eq!(chain_tip.min_ntime(), ntime + 600);
+        assert_eq!(chain_tip.nbits(), n_bits);
+
+        // The previously active job committed to the old chain tip, so it must now be stale
+        // and a late share for it rejected accordingly (not panic on a missing
+        // job_id_to_target entry).
+        assert!(standard_channel.get_active_job().is_none());
+        let share_for_old_job = SubmitSharesStandardOwned {
             channel_id: standard_channel_id,
             sequence_number: 0,
             job_id: active_job_id,
@@ -2237,11 +2299,28 @@ mod tests {
             ntime: 1745596932,
             version: 536870912,
         };
-        let res = standard_channel.validate_share(share_low_diff);
-        assert!(matches!(
-            res.unwrap_err(),
-            ShareValidationError::DoesNotMeetTarget(_)
-        ));
+        let res = standard_channel.validate_share(share_for_old_job);
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Stale(_)));
+
+        // and the channel is not wedged: the next non-future template can be processed,
+        // since the chain tip is set
+        let mut template = template;
+        template.template_id = 2;
+        standard_channel
+            .on_new_template(
+                template,
+                vec![TxOut {
+                    value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+                    script_pubkey: {
+                        let mut script_bytes = vec![0];
+                        script_bytes.push(20);
+                        script_bytes.extend_from_slice(&pubkey_hash);
+                        ScriptBuf::from(script_bytes)
+                    },
+                }],
+            )
+            .unwrap();
+        assert!(standard_channel.get_active_job().is_some());
     }
 
     #[test]
@@ -2492,5 +2571,200 @@ mod tests {
         // target metadata must not outlive the jobs it belongs to: one entry for the active
         // job plus one per retained past job
         assert_eq!(standard_channel.job_id_to_target.len(), MAX_PAST_JOBS + 1);
+    }
+
+    #[test]
+    fn test_share_validation_ntime_above_max_future_block_time() {
+        // Regression test: a share ntime beyond the chain tip's min_ntime +
+        // MAX_FUTURE_BLOCK_TIME would put a consensus-invalid timestamp in the block header,
+        // so it must be rejected; ntime exactly on the bound is still accepted.
+        let standard_channel_id = 1;
+
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut standard_channel = StandardChannel::new(
+            standard_channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1_000.0,
+            100,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![2, 159, 0, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967294,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 158,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        // anchor the tip so the pre-mined share (ntime 1745611105, nonce 92092, from
+        // test_share_validation_valid_share) sits exactly on the upper bound
+        let share_ntime: u32 = 1745611105;
+        let ntime = share_ntime - crate::MAX_FUTURE_BLOCK_TIME;
+        let prev_hash = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        let n_bits = 453040064;
+        standard_channel.set_chain_tip(ChainTip::new(prev_hash, n_bits, ntime));
+        standard_channel
+            .on_new_template(template, coinbase_reward_outputs)
+            .unwrap();
+
+        let share = |sequence_number: u32, ntime: u32| SubmitSharesStandardOwned {
+            channel_id: standard_channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce: 92092,
+            ntime,
+            version: 536870912,
+        };
+
+        // one second above the bound: rejected before any PoW evaluation
+        let res = standard_channel.validate_share(share(0, share_ntime + 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // u32::MAX is likewise rejected (the bound saturates instead of wrapping)
+        let res = standard_channel.validate_share(share(1, u32::MAX));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // exactly on the bound: the pre-mined share is accepted
+        let res = standard_channel.validate_share(share(2, share_ntime));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+    }
+
+    #[test]
+    fn test_validate_share_fails_once_seen_shares_budget_is_exhausted() {
+        // Regression test: `seen_shares` grows with every accepted share and is only flushed on
+        // chain-tip transitions, whose timing the peer controls. The budget derived from the
+        // channel's expected share rate must turn overflow into an explicit error (so the
+        // embedding application closes the channel) instead of unbounded memory growth.
+        let standard_channel_id = 1;
+
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let expected_share_per_minute = 1.0;
+        let mut standard_channel = StandardChannel::new(
+            standard_channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1_000.0,
+            100,
+            expected_share_per_minute,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let template = NewTemplate {
+            template_id: 1,
+            future_template: false,
+            version: 536870912,
+            coinbase_tx_version: 2,
+            coinbase_prefix: vec![2, 159, 0, 0].try_into().unwrap(),
+            coinbase_tx_input_sequence: 4294967294,
+            coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+            coinbase_tx_outputs_count: 1,
+            coinbase_tx_outputs: vec![
+                0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209,
+                222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180,
+                139, 235, 216, 54, 151, 78, 140, 249,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_locktime: 158,
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0]; // SegWit version 0
+        script_bytes.push(20); // Push 20 bytes (length of pubkey hash)
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        let share_ntime: u32 = 1745611105;
+        let prev_hash = [
+            154, 124, 239, 231, 221, 122, 160, 173, 164, 175, 87, 33, 74, 214, 191, 107, 73, 34, 0,
+            162, 227, 16, 44, 40, 33, 73, 0, 0, 0, 0, 0, 0,
+        ]
+        .into();
+        standard_channel.set_chain_tip(ChainTip::new(prev_hash, 453040064, share_ntime - 60));
+        standard_channel
+            .on_new_template(template, coinbase_reward_outputs)
+            .unwrap();
+
+        // fill the dedup cache up to the channel's budget (1 share/min derives 1 200,
+        // clamped up to MIN_SEEN_SHARES_CAP = 4 096)
+        let budget = crate::seen_shares_budget(expected_share_per_minute as f64);
+        for i in 0..budget as u32 {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_le_bytes());
+            standard_channel.share_accounting.update_share_accounting(
+                1.0,
+                i,
+                <bitcoin::hashes::sha256d::Hash as bitcoin::hashes::Hash>::from_slice(&bytes)
+                    .unwrap(),
+            );
+        }
+
+        // the pre-mined valid share (from test_share_validation_valid_share) must now be
+        // refused with the budget error rather than grow the cache further
+        let valid_share = SubmitSharesStandardOwned {
+            channel_id: standard_channel_id,
+            sequence_number: 1,
+            job_id: 1,
+            nonce: 92092,
+            ntime: share_ntime,
+            version: 536870912,
+        };
+        let res = standard_channel.validate_share(valid_share);
+        assert!(matches!(
+            res.unwrap_err(),
+            ShareValidationError::SeenSharesBudgetExhausted
+        ));
     }
 }

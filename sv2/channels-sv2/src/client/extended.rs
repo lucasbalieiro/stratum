@@ -15,7 +15,7 @@ use crate::{
     extranonce_manager::ExtranoncePrefix,
     merkle_root::merkle_root_from_path,
     target::{bytes_to_hex, u256_to_block_hash},
-    MAX_EXTRANONCE_LEN, VERSION_ROLLING_MASK,
+    MAX_EXTRANONCE_LEN, MAX_FUTURE_BLOCK_TIME, VERSION_ROLLING_MASK,
 };
 use alloc::{collections::VecDeque, format, string::String, vec, vec::Vec};
 use binary_sv2::Sv2OptionOwned;
@@ -608,7 +608,12 @@ impl ExtendedChannel {
     ///
     /// Updates channel state with the share validation result:
     /// - Prevents propagation of stale, duplicate, low-difficulty, or low-ntime shares
-    ///   (shares whose `ntime` is below the chain tip's `min_ntime`).
+    ///   (shares whose `ntime` is below the chain tip's `min_ntime` or the job's own
+    ///   `min_ntime` — an immediately-active job may carry a `min_ntime` later than the chain
+    ///   tip's minimum, so the effective lower bound is the larger of the two — as well as
+    ///   shares whose `ntime` exceeds the chain tip's `min_ntime + MAX_FUTURE_BLOCK_TIME`, see
+    ///   [`MAX_FUTURE_BLOCK_TIME`] for how this clockless upper bound relates to the spec's
+    ///   elapsed-time window).
     /// - Indicates whether a block was found from the share.
     /// - Maintains local share accounting for later reconciliation with upstream acknowledgements.
     pub fn validate_share(
@@ -683,6 +688,25 @@ impl ExtendedChannel {
             return Err(ShareValidationError::Invalid(
                 ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
             ));
+        }
+
+        // consensus caps block timestamps at ~2h in the future; the allowance is anchored at
+        // chain-tip receipt, since this crate has no clock (see MAX_FUTURE_BLOCK_TIME)
+        if share.ntime > chain_tip.min_ntime().saturating_add(MAX_FUTURE_BLOCK_TIME) {
+            return Err(ShareValidationError::Invalid(
+                ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
+            ));
+        }
+
+        // an immediately-active job carries its own min_ntime, which may be later than the
+        // chain tip's minimum; jobs activated from the future queue have it overwritten with
+        // the SetNewPrevHash timestamp, making this check redundant there (and harmless)
+        if let Some(job_min_ntime) = job.0.min_ntime.clone().into_inner() {
+            if share.ntime < job_min_ntime {
+                return Err(ShareValidationError::Invalid(
+                    ERROR_CODE_SUBMIT_SHARES_INVALID_SHARE,
+                ));
+            }
         }
 
         // Only BIP323 general-purpose bits may differ from the job's advertised version.
@@ -1316,7 +1340,7 @@ mod tests {
                 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
                 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
                 235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ]
             .try_into()
             .unwrap(),
@@ -2335,5 +2359,185 @@ mod tests {
         }
         assert_eq!(channel.get_past_jobs_count(), 0);
         assert!(channel.get_active_job().is_none());
+    }
+
+    #[test]
+    fn test_share_validation_ntime_below_job_min_ntime() {
+        // Regression test: an immediately-active job carries its own min_ntime, which may be
+        // later than the chain tip's minimum. A share in the gap
+        // (chain_tip.min_ntime <= ntime < job.min_ntime) must be rejected.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+        );
+
+        let job = |job_id: u32, min_ntime: Option<u32>| NewExtendedMiningJob {
+            channel_id,
+            job_id,
+            min_ntime: Sv2Option::new(min_ntime),
+            version: 536870912,
+            version_rolling_allowed: true,
+            coinbase_tx_prefix: vec![
+                2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            coinbase_tx_suffix: vec![
+                255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183, 220,
+                194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252, 0, 0, 0,
+                0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113, 209, 222,
+                253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153, 98, 180, 139,
+                235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]
+            .try_into()
+            .unwrap(),
+            merkle_path: vec![].try_into().unwrap(),
+        };
+
+        let share = |sequence_number: u32, job_id: u32, ntime: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id,
+            nonce: 741057,
+            ntime,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+
+        // activate a chain tip at nTime t via a future job
+        let tip_ntime: u32 = 1745596930;
+        channel.on_new_extended_mining_job(job(1, None)).unwrap();
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: tip_ntime,
+            })
+            .unwrap();
+
+        // re-confirm the chain-tip lower bound still holds
+        let res = channel.validate_share(share(0, 1, tip_ntime - 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // install an immediately-active job whose own min_ntime is later than the tip's
+        let job_min_ntime = tip_ntime + 3;
+        channel
+            .on_new_extended_mining_job(job(2, Some(job_min_ntime)))
+            .unwrap();
+
+        // a share in the gap passes the chain-tip bound but not the job's own bound
+        let res = channel.validate_share(share(1, 2, job_min_ntime - 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        let res = channel.validate_share(share(2, 2, job_min_ntime));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
+    }
+
+    #[test]
+    fn test_share_validation_ntime_above_max_future_block_time() {
+        // Regression test: a share ntime beyond the chain tip's min_ntime +
+        // MAX_FUTURE_BLOCK_TIME would put a consensus-invalid timestamp in the block header,
+        // so it must be rejected; ntime exactly on the bound is still accepted.
+        let channel_id = 1;
+        let extranonce_prefix = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            8u16,
+        );
+
+        channel
+            .on_new_extended_mining_job(NewExtendedMiningJob {
+                channel_id,
+                job_id: 1,
+                min_ntime: Sv2Option::new(None),
+                version: 536870912,
+                version_rolling_allowed: true,
+                coinbase_tx_prefix: vec![
+                    2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 34, 82, 0,
+                ]
+                .try_into()
+                .unwrap(),
+                coinbase_tx_suffix: vec![
+                    255, 255, 255, 255, 2, 0, 242, 5, 42, 1, 0, 0, 0, 22, 0, 20, 235, 225, 183,
+                    220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194, 8, 252,
+                    0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113,
+                    209, 222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153,
+                    98, 180, 139, 235, 216, 54, 151, 78, 140, 249, 1, 32, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0,
+                ]
+                .try_into()
+                .unwrap(),
+                merkle_path: vec![].try_into().unwrap(),
+            })
+            .unwrap();
+
+        let tip_ntime: u32 = 1745596930;
+        // network target: 000000000000d7c0... (hard, so no accidental BlockFound)
+        channel
+            .on_set_new_prev_hash(SetNewPrevHashMp {
+                channel_id,
+                job_id: 1,
+                prev_hash: [
+                    200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144,
+                    205, 88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+                ]
+                .into(),
+                nbits: 453040064,
+                min_ntime: tip_ntime,
+            })
+            .unwrap();
+
+        let share = |sequence_number: u32, ntime: u32| SubmitSharesExtended {
+            channel_id,
+            sequence_number,
+            job_id: 1,
+            nonce: 741057,
+            ntime,
+            version: 536870912,
+            extranonce: vec![1, 0, 0, 0, 0, 0, 0, 0].try_into().unwrap(),
+        };
+
+        // one second above the bound: rejected before any PoW evaluation
+        let res = channel.validate_share(share(0, tip_ntime + crate::MAX_FUTURE_BLOCK_TIME + 1));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // u32::MAX is likewise rejected (the bound saturates instead of wrapping)
+        let res = channel.validate_share(share(1, u32::MAX));
+        assert!(matches!(res.unwrap_err(), ShareValidationError::Invalid(_)));
+
+        // exactly on the bound the share is accepted (channel target is permissive)
+        let res = channel.validate_share(share(2, tip_ntime + crate::MAX_FUTURE_BLOCK_TIME));
+        assert!(matches!(res, Ok(ShareValidationResult::Valid(_))));
     }
 }

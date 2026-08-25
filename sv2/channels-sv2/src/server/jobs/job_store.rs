@@ -267,6 +267,15 @@ impl<T: Job> JobStore<T> {
         self.retire_active_to_past_uncapped();
     }
 
+    /// Drops the active job (if any) without retaining it.
+    ///
+    /// For channels that never validate shares against stored jobs (group channels), routing
+    /// the job through the past → stale rotation would only retain state that can never be
+    /// referenced again.
+    pub fn clear_active_job(&mut self) {
+        self.active_job = None;
+    }
+
     /// Marks all past jobs as stale so shares can be rejected with the proper error code.
     pub fn mark_past_jobs_as_stale(&mut self) {
         // Transfer past jobs to stale jobs collection and reset past jobs to empty

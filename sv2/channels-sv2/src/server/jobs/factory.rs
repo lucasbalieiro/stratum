@@ -65,15 +65,26 @@ impl JobIdFactory {
     }
 
     /// Increments then returns the internal state on a new ID.
+    ///
+    /// Explicitly wraps to `0` after `u32::MAX`, restarting the sequence. This makes the
+    /// overflow behavior identical across build profiles (unchecked `+= 1` would panic with
+    /// overflow checks enabled and wrap silently without them). Reuse of an ID is safe in
+    /// practice: future jobs are consumed on activation and past/stale jobs are flushed on
+    /// every chain-tip transition, so a wrapped ID can only land on a still-tracked job (the
+    /// stale set retained from the previous tip) if all 2³² allocations happen within a single
+    /// tip epoch — orders of magnitude beyond any realistic job rate. Even then, share
+    /// validation checks the stale set first, so the collision degrades to stale-share
+    /// rejections that clear at the next transition.
     fn next(&mut self) -> u32 {
-        self.state += 1;
+        self.state = self.state.wrapping_add(1);
         self.state
     }
 }
 
 /// A Factory for creating Extended or Standard Jobs.
 ///
-/// Ensures unique job ids.
+/// Ensures unique job ids within any window of 2³² allocations: IDs are sequential and
+/// explicitly wrap to `0` after `u32::MAX` (see `JobIdFactory::next` for why reuse is safe).
 ///
 /// Enables creation of new Extended Jobs from NewTemplate and SetCustomMiningJob messages.
 ///
@@ -1119,6 +1130,34 @@ mod tests {
             new_custom_job(MAX_COINBASE_PREFIX_SIZE + 1).unwrap_err(),
             JobFactoryError::ScriptSigSizeTooLarge
         ));
+    }
+
+    #[test]
+    fn test_job_id_wraps_to_zero_after_u32_max() {
+        let mut job_factory = JobFactory::new(true, None, None);
+
+        let new_job = |job_factory: &mut JobFactory| {
+            job_factory
+                .new_extended_job(
+                    1,
+                    None,
+                    vec![0; 32],
+                    template_with_coinbase_prefix(vec![82, 0]),
+                    coinbase_reward_outputs(),
+                    32,
+                )
+                .unwrap()
+        };
+
+        // place the private counter one below the last u32 ID
+        job_factory.job_id_factory.state = u32::MAX - 1;
+        assert_eq!(new_job(&mut job_factory).get_job_message().job_id, u32::MAX);
+
+        // the next allocation must wrap to 0 and restart the sequence, identically across
+        // build profiles (this test panics on overflow-checked builds without the explicit
+        // wrapping arithmetic)
+        assert_eq!(new_job(&mut job_factory).get_job_message().job_id, 0);
+        assert_eq!(new_job(&mut job_factory).get_job_message().job_id, 1);
     }
 
     #[test]
