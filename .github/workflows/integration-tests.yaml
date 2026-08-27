@@ -32,10 +32,13 @@ jobs:
             || true)
 
           if [ "$ACTION" = "edited" ]; then
-            if [ "$OLD_COMPANION" != "$NEW_COMPANION" ]; then
-              echo "should_run_integration_test=true" >> "$GITHUB_OUTPUT"
-            else
+            # Only skip when a companion line exists and was not changed by the
+            # edit. An edit without a companion line (or with an empty body) is
+            # not a reason to skip: the prior run's failure must remain visible.
+            if [ -n "$NEW_COMPANION" ] && [ "$OLD_COMPANION" = "$NEW_COMPANION" ]; then
               echo "should_run_integration_test=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_run_integration_test=true" >> "$GITHUB_OUTPUT"
             fi
           else
             echo "should_run_integration_test=true" >> "$GITHUB_OUTPUT"
