@@ -68,7 +68,8 @@ mod datatypes;
 pub use datatypes::{
     B016MOwned, B0255Owned, B032Owned, B064KOwned, Mac, MacOwned, PubKey, PubKeyOwned, Seq0255,
     Seq0255Owned, Seq064K, Seq064KOwned, Signature, SignatureOwned, Str0255, Str0255Owned,
-    Sv2DataType, Sv2Option, Sv2OptionOwned, U256Owned, B016M, B0255, B032, B064K, U24, U256,
+    Sv2DataType, Sv2Option, Sv2OptionOwned, U256Owned, B016M, B0255, B032, B064K, ERROR_SAMPLE_LEN,
+    U24, U256,
 };
 
 pub use crate::codec::{
@@ -214,7 +215,11 @@ pub enum Error {
     VoidFieldMarker,
 
     /// Signifies a value overflow based on protocol restrictions, containing details about
-    /// fixed/variable size, maximum size allowed, and the offending value details.
+    /// fixed/variable size, maximum size allowed, and the offending length.
+    ///
+    /// The `Vec<u8>` is a bounded diagnostic sample holding at most the first [`ERROR_SAMPLE_LEN`]
+    /// bytes of the offending value, or only the length prefix when the overflow is detected from
+    /// a declared encoded length. The final field reports the complete offending length.
     ValueExceedsMaxSize(bool, usize, usize, usize, Vec<u8>, usize),
 
     /// Triggered when a sequence type (`Seq0255`, `Seq064K`) exceeds its maximum allowable size.
@@ -229,4 +234,48 @@ pub enum Error {
     /// Indicates a protocol constraint violation where `Sv2Option` unexpectedly contains multiple
     /// elements.
     Sv2OptionHaveMoreThenOneElement(u8),
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            // Keep the diagnostic sample out of formatted output; the scalar fields already
+            // describe the violation.
+            Error::ValueExceedsMaxSize(is_fixed, size, header_size, max_size, _, actual_size) => {
+                write!(
+                    f,
+                    "ValueExceedsMaxSize({is_fixed}, {size}, {header_size}, {max_size}, [redacted], {actual_size})"
+                )
+            }
+            other => write!(f, "{other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use alloc::{string::ToString, vec};
+
+    // The variant is public, so a downstream crate can construct it with a payload larger than
+    // the in-crate cap. Display must not write that payload out regardless.
+    #[test]
+    fn binary_error_display_does_not_dump_embedded_payload() {
+        let sample = vec![0xAB_u8; 64 * 1024];
+        let err = Error::ValueExceedsMaxSize(false, 1, 1, 32, sample, 64 * 1024);
+
+        let rendered = err.to_string();
+
+        assert!(
+            !rendered.contains("171"),
+            "Display leaked sample bytes: {rendered}"
+        );
+        assert!(
+            rendered.len() < 128,
+            "Display grew with the sample: {} bytes",
+            rendered.len()
+        );
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("65536"));
+    }
 }

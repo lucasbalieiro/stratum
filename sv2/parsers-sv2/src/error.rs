@@ -34,7 +34,7 @@ impl core::fmt::Display for ParserError {
             }
             ParserError::BadPayloadSize => write!(f, "Bad payload size"),
             ParserError::UnexpectedPoolMessage => write!(f, "Unexpected pool message"),
-            ParserError::BinaryError(e) => write!(f, "Binary error: {e:?}"),
+            ParserError::BinaryError(e) => write!(f, "Binary error: {e}"),
             ParserError::TlvError(e) => write!(f, "TLV error: {e}"),
             ParserError::ExtensionError(e) => write!(f, "Extension error: {e}"),
         }
