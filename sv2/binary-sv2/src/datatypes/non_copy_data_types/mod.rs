@@ -28,6 +28,7 @@ use core::fmt::Write as _;
 pub(crate) mod inner;
 mod seq_inner;
 
+pub use inner::ERROR_SAMPLE_LEN;
 pub(crate) use inner::{Inner, InnerOwned};
 pub use seq_inner::{Seq0255, Seq0255Owned, Seq064K, Seq064KOwned, Sv2Option, Sv2OptionOwned};
 

@@ -257,6 +257,11 @@ fn expected_length_variable<
     }
 }
 
+/// Upper bound on the offending bytes retained in `Error::ValueExceedsMaxSize`.
+///
+/// Retain one hash-sized prefix for diagnostics while keeping error allocations bounded.
+pub const ERROR_SAMPLE_LEN: usize = 32;
+
 fn validate_payload<
     const ISFIXED: bool,
     const SIZE: usize,
@@ -276,7 +281,7 @@ fn validate_payload<
                 SIZE,
                 HEADERSIZE,
                 MAXSIZE,
-                value.to_vec(),
+                value[..value.len().min(ERROR_SAMPLE_LEN)].to_vec(),
                 value.len(),
             ))
         };
@@ -288,7 +293,7 @@ fn validate_payload<
             SIZE,
             HEADERSIZE,
             MAXSIZE,
-            value.to_vec(),
+            value[..value.len().min(ERROR_SAMPLE_LEN)].to_vec(),
             value.len(),
         ))
     } else {
@@ -488,7 +493,11 @@ impl<const ISFIXED: bool, const SIZE: usize, const HEADERSIZE: usize, const MAXS
     type Error = Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        Self::new(value.to_vec())
+        validate_payload::<ISFIXED, SIZE, HEADERSIZE, MAXSIZE>(value)?;
+
+        Ok(Self {
+            data: value.to_vec(),
+        })
     }
 }
 
@@ -520,7 +529,7 @@ impl<const N: usize, const SIZE: usize, const HEADERSIZE: usize, const MAXSIZE: 
     type Error = Error;
 
     fn try_from(value: [u8; N]) -> Result<Self, Self::Error> {
-        Self::new(value.to_vec())
+        Self::try_from(&value[..])
     }
 }
 
@@ -530,7 +539,7 @@ impl<const N: usize, const SIZE: usize, const HEADERSIZE: usize, const MAXSIZE: 
     type Error = Error;
 
     fn try_from(value: &[u8; N]) -> Result<Self, Self::Error> {
-        Self::new(value.to_vec())
+        Self::try_from(&value[..])
     }
 }
 
@@ -540,7 +549,7 @@ impl<const N: usize, const SIZE: usize, const HEADERSIZE: usize, const MAXSIZE: 
     type Error = Error;
 
     fn try_from(value: &mut [u8; N]) -> Result<Self, Self::Error> {
-        Self::new(value.to_vec())
+        Self::try_from(&value[..])
     }
 }
 
@@ -632,7 +641,7 @@ impl<const ISFIXED: bool, const SIZE: usize, const HEADERSIZE: usize, const MAXS
 
 #[cfg(test)]
 mod test {
-    use super::{Inner, InnerOwned};
+    use super::{Inner, InnerOwned, ERROR_SAMPLE_LEN};
     use crate::{B032Owned, Error, GetSize, SignatureOwned, SizeHint, U256Owned, B032, U256};
     extern crate std;
     use self::std::panic::catch_unwind;
@@ -799,6 +808,40 @@ mod test {
         match <B032<'_> as SizeHint>::size_hint(&frame, 0).unwrap_err() {
             Error::ValueExceedsMaxSize(false, 1, 1, 32, retained, 33) => {
                 assert_eq!(retained.len(), 1);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    // Both construction paths cap their sample; only the length field grows with the input.
+    #[test]
+    fn oversized_value_error_retains_only_a_capped_sample() {
+        let oversized = std::vec![0_u8; 1024 * 1024];
+
+        match B032Owned::new(oversized.clone()).unwrap_err() {
+            Error::ValueExceedsMaxSize(false, 1, 1, 32, retained, 1_048_576) => {
+                assert_eq!(retained.len(), ERROR_SAMPLE_LEN);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        match B032Owned::try_from(oversized.as_slice()).unwrap_err() {
+            Error::ValueExceedsMaxSize(false, 1, 1, 32, retained, 1_048_576) => {
+                assert_eq!(retained.len(), ERROR_SAMPLE_LEN);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        match B032::new(&oversized).unwrap_err() {
+            Error::ValueExceedsMaxSize(false, 1, 1, 32, retained, 1_048_576) => {
+                assert_eq!(retained.len(), ERROR_SAMPLE_LEN);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        match U256Owned::new(oversized).unwrap_err() {
+            Error::ValueExceedsMaxSize(true, 32, 0, 0, retained, 1_048_576) => {
+                assert_eq!(retained.len(), ERROR_SAMPLE_LEN);
             }
             other => panic!("unexpected error: {other:?}"),
         }

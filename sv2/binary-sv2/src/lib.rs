@@ -68,7 +68,8 @@ mod datatypes;
 pub use datatypes::{
     B016MOwned, B0255Owned, B032Owned, B064KOwned, Mac, MacOwned, PubKey, PubKeyOwned, Seq0255,
     Seq0255Owned, Seq064K, Seq064KOwned, Signature, SignatureOwned, Str0255, Str0255Owned,
-    Sv2DataType, Sv2Option, Sv2OptionOwned, U256Owned, B016M, B0255, B032, B064K, U24, U256,
+    Sv2DataType, Sv2Option, Sv2OptionOwned, U256Owned, B016M, B0255, B032, B064K, ERROR_SAMPLE_LEN,
+    U24, U256,
 };
 
 pub use crate::codec::{
@@ -216,9 +217,9 @@ pub enum Error {
     /// Signifies a value overflow based on protocol restrictions, containing details about
     /// fixed/variable size, maximum size allowed, and the offending length.
     ///
-    /// The `Vec<u8>` is a bounded diagnostic sample; when the overflow is detected from a declared
-    /// encoded length it holds only that length prefix. The final field reports the complete
-    /// offending length.
+    /// The `Vec<u8>` is a bounded diagnostic sample holding at most the first [`ERROR_SAMPLE_LEN`]
+    /// bytes of the offending value, or only the length prefix when the overflow is detected from
+    /// a declared encoded length. The final field reports the complete offending length.
     ValueExceedsMaxSize(bool, usize, usize, usize, Vec<u8>, usize),
 
     /// Triggered when a sequence type (`Seq0255`, `Seq064K`) exceeds its maximum allowable size.
