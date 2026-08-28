@@ -1,5 +1,5 @@
 use crate::error::{self, Error};
-use binary_sv2::{B032Owned, U256Owned, B032};
+use binary_sv2::{B032Owned, U256Owned, B032, ERROR_SAMPLE_LEN};
 use bitcoin::hashes::hex::{DisplayHex, FromHex};
 use byteorder::{BigEndian, ByteOrder, LittleEndian, WriteBytesExt};
 use serde_json::Value;
@@ -216,7 +216,7 @@ impl TryFrom<&str> for PrevHash {
                         32,
                         0,
                         0,
-                        prev_hash_stratum_order,
+                        prev_hash_stratum_order[..len.min(ERROR_SAMPLE_LEN)].to_vec(),
                         len,
                     ),
                 ))
