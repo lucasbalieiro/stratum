@@ -235,3 +235,47 @@ pub enum Error {
     /// elements.
     Sv2OptionHaveMoreThenOneElement(u8),
 }
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            // Keep the diagnostic sample out of formatted output; the scalar fields already
+            // describe the violation.
+            Error::ValueExceedsMaxSize(is_fixed, size, header_size, max_size, _, actual_size) => {
+                write!(
+                    f,
+                    "ValueExceedsMaxSize({is_fixed}, {size}, {header_size}, {max_size}, [redacted], {actual_size})"
+                )
+            }
+            other => write!(f, "{other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use alloc::{string::ToString, vec};
+
+    // The variant is public, so a downstream crate can construct it with a payload larger than
+    // the in-crate cap. Display must not write that payload out regardless.
+    #[test]
+    fn binary_error_display_does_not_dump_embedded_payload() {
+        let sample = vec![0xAB_u8; 64 * 1024];
+        let err = Error::ValueExceedsMaxSize(false, 1, 1, 32, sample, 64 * 1024);
+
+        let rendered = err.to_string();
+
+        assert!(
+            !rendered.contains("171"),
+            "Display leaked sample bytes: {rendered}"
+        );
+        assert!(
+            rendered.len() < 128,
+            "Display grew with the sample: {} bytes",
+            rendered.len()
+        );
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("65536"));
+    }
+}
