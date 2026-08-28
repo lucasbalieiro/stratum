@@ -251,7 +251,7 @@ fn expected_length_variable<
             SIZE,
             HEADERSIZE,
             MAXSIZE,
-            data.to_vec(),
+            data[..HEADERSIZE].to_vec(),
             payload_len,
         ))
     }
@@ -788,5 +788,19 @@ mod test {
         type FixedZero<'a> = Inner<'a, true, 0, 0, 0>;
 
         assert_eq!(<FixedZero<'_> as SizeHint>::size_hint(&[], 0).unwrap(), 0);
+    }
+
+    // An over-limit length prefix must not copy the rest of the frame into the error.
+    #[test]
+    fn oversized_length_error_retains_only_the_header() {
+        let mut frame = std::vec![0_u8; 1024 * 1024];
+        frame[0] = 33;
+
+        match <B032<'_> as SizeHint>::size_hint(&frame, 0).unwrap_err() {
+            Error::ValueExceedsMaxSize(false, 1, 1, 32, retained, 33) => {
+                assert_eq!(retained.len(), 1);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

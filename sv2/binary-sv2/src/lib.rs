@@ -214,7 +214,11 @@ pub enum Error {
     VoidFieldMarker,
 
     /// Signifies a value overflow based on protocol restrictions, containing details about
-    /// fixed/variable size, maximum size allowed, and the offending value details.
+    /// fixed/variable size, maximum size allowed, and the offending length.
+    ///
+    /// The `Vec<u8>` is a bounded diagnostic sample; when the overflow is detected from a declared
+    /// encoded length it holds only that length prefix. The final field reports the complete
+    /// offending length.
     ValueExceedsMaxSize(bool, usize, usize, usize, Vec<u8>, usize),
 
     /// Triggered when a sequence type (`Seq0255`, `Seq064K`) exceeds its maximum allowable size.
