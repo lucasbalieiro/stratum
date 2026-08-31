@@ -37,6 +37,11 @@
 //! Parses and captures a struct’s name, generics, and field data, enabling custom encoding and
 //! decoding functionality.
 //!
+//! ### Visibility
+//! The generated `{Name}Owned` struct is emitted next to the source struct and carries the
+//! visibility written on it (`pub`, `pub(crate)`, `pub(super)`, private, ...); each of its fields
+//! likewise carries the visibility of the corresponding source field.
+//!
 //! ### Custom Implementations
 //! The `Encodable` macro generates an `EncodableField` implementation by serializing each field,
 //! while `Decodable` constructs the struct from binary data. Both macros provide support for
@@ -221,6 +226,8 @@ enum ParserState {
 struct ParsedStruct {
     // Name of the struct.
     pub name: String,
+    // Visibility of the struct, verbatim (empty when private).
+    pub vis: String,
     // Generics associated with the struct, if any.
     pub generics: String,
     // List of fields within the struct.
@@ -247,6 +254,8 @@ struct ParsedField {
     name: String,
     // Span of the field name.
     span: Span,
+    // Visibility of the field, verbatim (empty when private).
+    vis: String,
     // Type of the field.
     type_: String,
     // Generics associated with the field, if any.
@@ -263,6 +272,7 @@ impl ParsedField {
         ParsedField {
             name: "".to_string(),
             span: Span::call_site(),
+            vis: "".to_string(),
             type_: "".to_string(),
             generics: "".to_string(),
         }
@@ -464,10 +474,15 @@ fn get_struct_properties(item: TokenStream) -> Result<ParsedStruct, MacroError> 
     let item = remove_attributes(item);
     let mut stream = item.into_iter();
 
-    // Check if the stream is a struct
+    // Check if the stream is a struct, collecting its visibility on the way
+    let mut struct_vis = "".to_string();
     loop {
         match stream.next() {
             Some(TokenTree::Ident(i)) if i.to_string() == "struct" => break,
+            Some(TokenTree::Ident(i)) if i.to_string() == "pub" => struct_vis = i.to_string(),
+            Some(TokenTree::Group(g)) if !struct_vis.is_empty() => {
+                struct_vis = format!("{struct_vis}{g}")
+            }
             Some(_) => continue,
             None => {
                 return Err(MacroError {
@@ -533,6 +548,7 @@ fn get_struct_properties(item: TokenStream) -> Result<ParsedStruct, MacroError> 
 
     Ok(ParsedStruct {
         name: struct_name,
+        vis: struct_vis,
         generics: struct_generics,
         fields,
     })
@@ -572,7 +588,7 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
         match (token, &field_parser_state) {
             (TokenTree::Ident(i), ParserState::Name) => {
                 if i.to_string() == "pub" {
-                    continue;
+                    field_.vis = i.to_string();
                 } else {
                     field_.name = i.to_string();
                     field_.span = i.span();
@@ -632,6 +648,9 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
                         field_.generics = format!("{}{}", field_.generics, p);
                     }
                 }
+            }
+            (TokenTree::Group(g), ParserState::Name) if !field_.vis.is_empty() => {
+                field_.vis = format!("{}{}", field_.vis, g);
             }
             (token, _) => {
                 return Err(MacroError {
@@ -815,9 +834,9 @@ pub fn decodable(item: TokenStream) -> TokenStream {
         };
         let owned_struct_field = format!(
             "
-            pub {}: {},
+            {} {}: {},
             ",
-            f.name, owned_ty
+            f.vis, f.name, owned_ty
         );
         owned_struct_fields.push_str(&owned_struct_field);
 
@@ -911,16 +930,24 @@ pub fn decodable(item: TokenStream) -> TokenStream {
         derive_decoded_fields,
     );
 
-    let owned_impl = if parsed_struct.generics.is_empty() {
+    let owned_struct = if parsed_struct.generics.is_empty() {
         String::new()
     } else {
         format!(
             "
     #[derive(Debug, Clone, PartialEq)]
-    pub struct {}Owned {{
+    {} struct {}Owned {{
         {}
-    }}
+    }}",
+            parsed_struct.vis, parsed_struct.name, owned_struct_fields,
+        )
+    };
 
+    let owned_impl = if parsed_struct.generics.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "
     impl{} {}{} {{
         pub fn into_owned(self) -> {}Owned {{
             {}Owned {{
@@ -951,8 +978,6 @@ pub fn decodable(item: TokenStream) -> TokenStream {
             Self::Struct(fields)
         }}
     }}",
-            parsed_struct.name,
-            owned_struct_fields,
             impl_generics,
             parsed_struct.name,
             parsed_struct.generics,
@@ -973,33 +998,21 @@ pub fn decodable(item: TokenStream) -> TokenStream {
         )
     };
 
-    let owned_export = if parsed_struct.generics.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "
-    pub use impl_parse_decodable_{}::{}Owned;",
-            parsed_struct.name.to_lowercase(),
-            parsed_struct.name,
-        )
-    };
-
     let result = format!(
-        "mod impl_parse_decodable_{} {{
+        "{}
+    mod impl_parse_decodable_{} {{
 
     use ::binary_sv2::{{decodable::DecodableField, decodable::FieldMarker, encodable::EncodableField, Decodable, Error, GetSize, SizeHint}};
     use super::*;
 
     {}
     {}
-    }}
-    {}",
+    }}",
+        owned_struct,
         // imports
         parsed_struct.name.to_lowercase(),
         decodable_impl,
         owned_impl,
-        owned_export,
-
     );
 
     parse_generated_tokens(&result)
