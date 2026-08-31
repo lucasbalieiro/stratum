@@ -747,3 +747,47 @@ mod test_to_writer_len {
         assert!(oversized[written..].iter().all(|b| *b == 0xAA));
     }
 }
+
+mod test_owned_visibility {
+    mod message {
+        use binary_sv2::*;
+
+        #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
+        pub(crate) struct Message<'decoder> {
+            pub public: u32,
+            pub(super) restricted: u16,
+            private: B0255<'decoder>,
+        }
+
+        impl<'decoder> Message<'decoder> {
+            pub fn new(public: u32, restricted: u16, private: B0255<'decoder>) -> Self {
+                Self {
+                    public,
+                    restricted,
+                    private,
+                }
+            }
+        }
+
+        impl MessageOwned {
+            pub fn private(&self) -> &B0255Owned {
+                &self.private
+            }
+        }
+    }
+
+    use core::convert::TryInto;
+    use message::{Message, MessageOwned};
+
+    #[test]
+    fn test_owned_struct_keeps_source_visibility() {
+        let mut private = [1_u8, 2, 3];
+        let message = Message::new(7, 9, (&mut private[..]).try_into().unwrap());
+
+        let owned: MessageOwned = message.into_owned();
+
+        assert_eq!(owned.public, 7);
+        assert_eq!(owned.restricted, 9);
+        assert_eq!(owned.private().as_ref(), &[1_u8, 2, 3]);
+    }
+}
