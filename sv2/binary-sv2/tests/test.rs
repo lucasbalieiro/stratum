@@ -749,6 +749,28 @@ mod test_to_writer_len {
 }
 
 mod test_owned_visibility {
+    macro_rules! define_plain {
+        ($struct_vis:vis $name:ident, $field_vis:vis $field:ident) => {
+            #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
+            $struct_vis struct $name<'decoder> {
+                $field_vis $field: B0255<'decoder>,
+                pub tail: u32,
+            }
+        };
+    }
+
+    macro_rules! define_documented {
+        ($struct_vis:vis $name:ident, $field_vis:vis $field:ident) => {
+            /// Struct docs.
+            #[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
+            $struct_vis struct $name<'decoder> {
+                /// Field docs.
+                $field_vis $field: B0255<'decoder>,
+                pub tail: u32,
+            }
+        };
+    }
+
     mod message {
         use binary_sv2::*;
 
@@ -774,10 +796,26 @@ mod test_owned_visibility {
                 &self.private
             }
         }
+
+        define_plain!(pub Plain, pub shown);
+        define_documented!(pub Documented, pub shown);
+        define_plain!(pub(crate) Hidden, hidden);
+
+        impl<'decoder> Hidden<'decoder> {
+            pub fn new(hidden: B0255<'decoder>, tail: u32) -> Self {
+                Self { hidden, tail }
+            }
+        }
+
+        impl HiddenOwned {
+            pub fn hidden(&self) -> &B0255Owned {
+                &self.hidden
+            }
+        }
     }
 
     use core::convert::TryInto;
-    use message::{Message, MessageOwned};
+    use message::{Documented, Hidden, HiddenOwned, Message, MessageOwned, Plain};
 
     #[test]
     fn test_owned_struct_keeps_source_visibility() {
@@ -789,5 +827,37 @@ mod test_owned_visibility {
         assert_eq!(owned.public, 7);
         assert_eq!(owned.restricted, 9);
         assert_eq!(owned.private().as_ref(), &[1_u8, 2, 3]);
+    }
+
+    #[test]
+    fn test_owned_struct_keeps_macro_generated_visibility() {
+        let mut shown = [4_u8, 5];
+        let plain = Plain {
+            shown: (&mut shown[..]).try_into().unwrap(),
+            tail: 11,
+        };
+        let owned = plain.into_owned();
+        assert_eq!(owned.shown.as_ref(), &[4_u8, 5]);
+        assert_eq!(owned.tail, 11);
+
+        let mut shown = [6_u8];
+        let documented = Documented {
+            shown: (&mut shown[..]).try_into().unwrap(),
+            tail: 12,
+        };
+        let owned = documented.into_owned();
+        assert_eq!(owned.shown.as_ref(), &[6_u8]);
+        assert_eq!(owned.tail, 12);
+    }
+
+    #[test]
+    fn test_owned_struct_keeps_macro_generated_private_field() {
+        let mut hidden = [7_u8, 8, 9];
+        let message = Hidden::new((&mut hidden[..]).try_into().unwrap(), 13);
+
+        let owned: HiddenOwned = message.into_owned();
+
+        assert_eq!(owned.hidden().as_ref(), &[7_u8, 8, 9]);
+        assert_eq!(owned.tail, 13);
     }
 }

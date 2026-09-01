@@ -165,6 +165,7 @@ fn remove_attributes(item: TokenStream) -> TokenStream {
             }
             TokenTree::Group(g) => {
                 if is_attribute {
+                    is_attribute = false;
                     continue;
                 } else {
                     let delimiter = g.delimiter();
@@ -479,11 +480,7 @@ fn get_struct_properties(item: TokenStream) -> Result<ParsedStruct, MacroError> 
     loop {
         match stream.next() {
             Some(TokenTree::Ident(i)) if i.to_string() == "struct" => break,
-            Some(TokenTree::Ident(i)) if i.to_string() == "pub" => struct_vis = i.to_string(),
-            Some(TokenTree::Group(g)) if !struct_vis.is_empty() => {
-                struct_vis = format!("{struct_vis}{g}")
-            }
-            Some(_) => continue,
+            Some(t) => struct_vis.push_str(&t.to_string()),
             None => {
                 return Err(MacroError {
                     span: Span::call_site(),
@@ -588,7 +585,7 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
         match (token, &field_parser_state) {
             (TokenTree::Ident(i), ParserState::Name) => {
                 if i.to_string() == "pub" {
-                    field_.vis = i.to_string();
+                    field_.vis.push_str("pub");
                 } else {
                     field_.name = i.to_string();
                     field_.span = i.span();
@@ -649,7 +646,7 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
                     }
                 }
             }
-            (TokenTree::Group(g), ParserState::Name) if !field_.vis.is_empty() => {
+            (TokenTree::Group(g), ParserState::Name) => {
                 field_.vis = format!("{}{}", field_.vis, g);
             }
             (token, _) => {
@@ -691,30 +688,31 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
 /// Given a struct:
 ///
 /// ```ignore
-/// struct Test {
-///     a: u32,
-///     b: u8,
-///     c: U24,
+/// pub struct Test<'decoder> {
+///     pub a: u32,
+///     pub(crate) b: u8,
+///     c: B0255<'decoder>,
 /// }
 /// ```
 ///
 /// Using `#[derive(Decodable)]` on `Test` generates the following implementations:
 ///
 /// ```ignore
+/// #[derive(Debug, Clone, PartialEq)]
+/// pub struct TestOwned {
+///     pub a: u32,
+///     pub(crate) b: u8,
+///     c: B0255Owned,
+/// }
+///
 /// mod impl_parse_decodable_test {
 ///     use ::binary_sv2::{
-///             decodable::{DecodableField, FieldMarker},
-///             Decodable, Error, SizeHint,
+///             decodable::DecodableField, decodable::FieldMarker,
+///             encodable::EncodableField, Decodable, Error, GetSize, SizeHint,
 ///     };
 ///     use super::*;
 ///
-///     struct Test {
-///         a: u32,
-///         b: u8,
-///         c: U24,
-///     }
-///
-///     impl<'decoder> Decodable<'decoder> for Test {
+///     impl<'decoder> Decodable<'decoder> for Test<'decoder> {
 ///         fn get_structure(__decodable_internal_data: &[u8]) -> Result<Vec<FieldMarker>, Error> {
 ///             let mut fields = Vec::new();
 ///             let mut __decodable_internal_offset = 0;
@@ -729,7 +727,7 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
 ///             let b = b.try_into()?;
 ///             fields.push(b);
 ///
-///             let c: Vec<FieldMarker> = U24::get_structure(&__decodable_internal_data[__decodable_internal_offset..])?;
+///             let c: Vec<FieldMarker> = B0255::get_structure(&__decodable_internal_data[__decodable_internal_offset..])?;
 ///             __decodable_internal_offset += c.size_hint_(&__decodable_internal_data, __decodable_internal_offset)?;
 ///             let c = c.try_into()?;
 ///             fields.push(c);
@@ -739,7 +737,7 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
 ///
 ///         fn from_decoded_fields(mut __decodable_internal_data: Vec<DecodableField<'decoder>>) -> Result<Self, Error> {
 ///             Ok(Self {
-///                 c: U24::from_decoded_fields(
+///                 c: B0255::from_decoded_fields(
 ///                     __decodable_internal_data.pop().ok_or(Error::NoDecodableFieldPassed)?.into(),
 ///                 )?,
 ///                 b: u8::from_decoded_fields(
@@ -752,31 +750,38 @@ fn parse_struct_fields(group: Vec<TokenTree>) -> Result<Vec<ParsedField>, MacroE
 ///         }
 ///     }
 ///
-///     impl Test {
+///     impl<'decoder> Test<'decoder> {
 ///         pub fn into_owned(self) -> TestOwned {
 ///             TestOwned {
-///                 a: self.a.clone(),
-///                 b: self.b.clone(),
-///                 c: self.c.clone(),
+///                 a: self.a,
+///                 b: self.b,
+///                 c: self.c.into_owned(),
 ///             }
 ///         }
 ///     }
 ///
-///     impl Test {
+///     impl<'decoder> Test<'decoder> {
 ///         pub fn as_owned(&self) -> TestOwned {
 ///             TestOwned {
 ///                 a: self.a.clone(),
 ///                 b: self.b.clone(),
-///                 c: self.c.clone(),
+///                 c: self.c.clone().into_owned(),
 ///             }
 ///         }
 ///     }
+///
+///     impl ::binary_sv2::GetSize for TestOwned { /* ... */ }
+///
+///     impl<'decoder> From<TestOwned> for EncodableField<'decoder> { /* ... */ }
 /// }
 /// ```
 ///
-/// This generated code enables `Test` to be decoded from a binary stream, defines how each
-/// field should be parsed, and provides `into_owned` and `as_owned` methods to facilitate
-/// ownership and lifetime management of decoded fields in the struct.
+/// This generated code enables `Test` to be decoded from a binary stream and defines how each
+/// field should be parsed.
+///
+/// The `TestOwned` mirror and the `into_owned` / `as_owned` methods that build it are emitted
+/// only for structs that carry generics; a struct with no lifetime or type parameters already
+/// owns its data, so it gets the `Decodable` implementation alone.
 #[proc_macro_derive(Decodable)]
 pub fn decodable(item: TokenStream) -> TokenStream {
     let parsed_struct = match get_struct_properties(item) {
@@ -930,23 +935,19 @@ pub fn decodable(item: TokenStream) -> TokenStream {
         derive_decoded_fields,
     );
 
-    let owned_struct = if parsed_struct.generics.is_empty() {
-        String::new()
+    let (owned_struct, owned_impl) = if parsed_struct.generics.is_empty() {
+        (String::new(), String::new())
     } else {
-        format!(
+        let owned_struct = format!(
             "
     #[derive(Debug, Clone, PartialEq)]
     {} struct {}Owned {{
         {}
     }}",
             parsed_struct.vis, parsed_struct.name, owned_struct_fields,
-        )
-    };
+        );
 
-    let owned_impl = if parsed_struct.generics.is_empty() {
-        String::new()
-    } else {
-        format!(
+        let owned_impl = format!(
             "
     impl{} {}{} {{
         pub fn into_owned(self) -> {}Owned {{
@@ -995,7 +996,9 @@ pub fn decodable(item: TokenStream) -> TokenStream {
             parsed_struct.name,
             parsed_struct.name,
             owned_encodable_fields,
-        )
+        );
+
+        (owned_struct, owned_impl)
     };
 
     let result = format!(
@@ -1009,7 +1012,6 @@ pub fn decodable(item: TokenStream) -> TokenStream {
     {}
     }}",
         owned_struct,
-        // imports
         parsed_struct.name.to_lowercase(),
         decodable_impl,
         owned_impl,
