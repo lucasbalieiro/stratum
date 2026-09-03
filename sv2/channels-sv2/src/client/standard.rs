@@ -68,19 +68,33 @@ pub struct StandardChannel {
     // Replaced IDs move to the back; overflow evicts from the front.
     past_job_order: VecDeque<u32>,
     stale_jobs: HashMap<u32, StandardJob>,
+    // Cap on `past_jobs` under the current chain tip, resolved from the constructor's
+    // `Option<usize>`; `None` and `Some(0)` both resolve to `MAX_PAST_JOBS`.
+    max_past_jobs: usize,
     share_accounting: ShareAccounting,
     chain_tip: Option<ChainTip>,
 }
 
 impl StandardChannel {
     /// Creates a new [`StandardChannel`] instance with provided channel parameters.
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
+    /// `Some(0)` both select [`MAX_PAST_JOBS`].
     pub fn new(
         channel_id: u32,
         user_identity: String,
         extranonce_prefix: ExtranoncePrefix,
         target: Target,
         nominal_hashrate: f32,
+        max_past_jobs: Option<usize>,
     ) -> Self {
+        // fall back to the default when the caller has no opinion: `None`, or `Some(0)`, which
+        // would otherwise evict the just-retired job and reject the most common late share
+        let max_past_jobs = match max_past_jobs {
+            Some(cap) if cap > 0 => cap,
+            _ => MAX_PAST_JOBS,
+        };
+
         Self {
             channel_id,
             user_identity,
@@ -93,6 +107,7 @@ impl StandardChannel {
             past_jobs: HashMap::new(),
             past_job_order: VecDeque::new(),
             stale_jobs: HashMap::new(),
+            max_past_jobs,
             share_accounting: ShareAccounting::new(),
             chain_tip: None,
         }
@@ -313,7 +328,7 @@ impl StandardChannel {
         self.past_job_order.retain(|id| *id != job_id);
         self.past_job_order.push_back(job_id);
 
-        if self.past_jobs.len() > MAX_PAST_JOBS {
+        if self.past_jobs.len() > self.max_past_jobs {
             if let Some(evicted_job_id) = self.past_job_order.pop_front() {
                 self.past_jobs.remove(&evicted_job_id);
             }
@@ -604,6 +619,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -664,6 +680,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -710,6 +727,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -759,6 +777,76 @@ mod tests {
     }
 
     #[test]
+    fn test_past_jobs_respect_constructor_override() {
+        // Some(cap) must override MAX_PAST_JOBS on the client standard channel's own eviction
+        // path, which keeps its past jobs directly rather than delegating to a JobStore.
+        let custom_cap = 3usize;
+        assert!(custom_cap < MAX_PAST_JOBS);
+
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+
+        let mut channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            Some(custom_cap),
+        );
+
+        let active_job = NewMiningJob {
+            channel_id,
+            job_id: 0,
+            merkle_root: [
+                189, 200, 25, 246, 119, 73, 34, 42, 209, 112, 237, 50, 169, 71, 163, 192, 24, 84,
+                56, 86, 147, 71, 243, 44, 18, 107, 167, 169, 169, 66, 186, 98,
+            ]
+            .into(),
+            version: 536870912,
+            min_ntime: Sv2Option::new(Some(1746839905)),
+        };
+
+        let job_count = 20u32;
+        for job_id in 0..job_count {
+            let mut job = active_job.clone();
+            job.job_id = job_id;
+            channel.on_new_mining_job(job);
+        }
+
+        // bounded by the override, not by MAX_PAST_JOBS
+        assert_eq!(channel.get_past_jobs_count(), custom_cap);
+
+        // the last job is active; only the newest `custom_cap` retired jobs survive
+        for job_id in 0..job_count - 1 - custom_cap as u32 {
+            assert!(channel.get_past_job(job_id).is_none());
+        }
+        for job_id in job_count - 1 - custom_cap as u32..job_count - 1 {
+            assert!(channel.get_past_job(job_id).is_some());
+        }
+
+        // `Some(0)` is not a zero cap: it means "no opinion" and selects the default
+        let mut zero_cap_channel = StandardChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(vec![0; 27]).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            Some(0),
+        );
+        for job_id in 0..MAX_PAST_JOBS as u32 + 2 {
+            let mut job = active_job.clone();
+            job.job_id = job_id;
+            zero_cap_channel.on_new_mining_job(job);
+        }
+        assert_eq!(zero_cap_channel.get_past_jobs_count(), MAX_PAST_JOBS);
+    }
+
+    #[test]
     fn test_past_jobs_are_bounded() {
         let channel_id = 1;
         let extranonce_prefix = [
@@ -773,6 +861,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let active_job = NewMiningJob {
@@ -823,6 +912,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let ntime: u32 = 1746839905;
@@ -877,6 +967,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -957,6 +1048,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1027,6 +1119,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1103,6 +1196,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1174,6 +1268,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1255,6 +1350,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1335,6 +1431,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let future_job = NewMiningJob {
@@ -1414,6 +1511,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let merkle_root = [
@@ -1495,6 +1593,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let merkle_root = [
@@ -1565,6 +1664,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         let merkle_root = [
@@ -1650,6 +1750,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             target,
             nominal_hashrate,
+            None,
         );
 
         let malformed_job = NewExtendedMiningJob {
@@ -1692,6 +1793,7 @@ mod tests {
             ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
             Target::from_le_bytes([0xff; 32]),
             1.0,
+            None,
         );
 
         channel.on_new_mining_job(NewMiningJob {

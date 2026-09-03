@@ -22,18 +22,25 @@ pub const MAX_FUTURE_JOBS: usize = 16;
 
 /// Maximum number of past jobs a client channel retains under the current chain tip.
 ///
-/// Upstream servers control the job stream, so a malicious or buggy server can force one retained
-/// past job per immediately-active job message. Bounding this map prevents unbounded memory
-/// growth. Past jobs exist for late-share validation, so the cap must stay nonzero. On overflow,
-/// the oldest past job is evicted: a share against it is rejected as
-/// [`InvalidJobId`](crate::client::share_accounting::ShareValidationError::InvalidJobId) even
-/// though it would otherwise have been accepted and propagated — a bounded loss of creditable
-/// work, the price of bounding memory under a hostile upstream.
+/// Past jobs serve late-share validation, so the cap must stay nonzero. On overflow the oldest is
+/// evicted and a share against it is rejected as
+/// [`InvalidJobId`](crate::client::share_accounting::ShareValidationError::InvalidJobId) — a
+/// bounded loss of creditable work, the price of bounding memory under a hostile upstream, which
+/// controls the job stream and can otherwise force one retained past job per active-job message.
 ///
-/// 50 matches the server-side cap, so a proxy's client channel never evicts a job its upstream
-/// still accepts, and buys ample headroom over the reachable submit depth of ~1-2 past jobs at a
-/// small measured memory cost — see the load-test data in PR #2290.
-pub const MAX_PAST_JOBS: usize = 50;
+/// Matches the server-side default, so a proxy never evicts a job its upstream still accepts.
+/// Retaining more than the upstream gains nothing: the proxy credits the share locally and the
+/// upstream rejects it anyway.
+///
+/// The cap is a retention *window* — `cap / job rate` — and here the upstream sets the rate.
+/// Measurement bounded the requirement at ~16 s (PR #2307), so 16 covers the fastest configurable
+/// rate of one job per second. Operators who know their upstream's interval `T` should set
+/// `ceil(16 s / T)`: 3 at a typical 6 s interval, 13.5 kB per channel against 72 kB (PR #2290).
+/// That matters most on a translator, where every downstream miner holds its own client channel;
+/// on a job-declaration client the interval is its own `SetCustomMiningJob` rate.
+///
+/// Constructors take a `max_past_jobs` override, falling back here on `None`/`Some(0)`.
+pub const MAX_PAST_JOBS: usize = 16;
 
 /// Maximum number of accepted-share hashes a client channel retains for duplicate detection.
 ///

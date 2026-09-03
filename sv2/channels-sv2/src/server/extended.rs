@@ -46,7 +46,12 @@ use crate::{
     merkle_root::merkle_root_from_path,
     server::{
         error::ExtendedChannelError,
-        jobs::{extended::ExtendedJob, factory::JobFactory, job_store::JobStore, JobOrigin},
+        jobs::{
+            extended::ExtendedJob,
+            factory::JobFactory,
+            job_store::{JobStore, MAX_PAST_JOBS},
+            JobOrigin,
+        },
         share_accounting::{ShareAccounting, ShareValidationError, ShareValidationResult},
     },
     target::{bytes_to_hex, hash_rate_to_target, u256_to_block_hash},
@@ -122,6 +127,9 @@ impl ExtendedChannel {
     /// Returns [`ExtendedChannelError::ScriptSigSizeTooLarge`] if the tags, the delimiters, the
     /// full extranonce and a worst-case coinbase prefix do not fit within the coinbase `scriptSig`
     /// budget, see [`JobFactory::fits_script_sig_budget`].
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
+    /// `Some(0)` both select the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_pool(
         channel_id: u32,
@@ -134,6 +142,7 @@ impl ExtendedChannel {
         share_batch_size: usize,
         expected_share_per_minute: f32,
         pool_tag_string: String,
+        max_past_jobs: Option<usize>,
     ) -> Result<Self, ExtendedChannelError> {
         Self::new(
             channel_id,
@@ -147,6 +156,7 @@ impl ExtendedChannel {
             expected_share_per_minute,
             Some(pool_tag_string),
             None,
+            max_past_jobs,
         )
     }
 
@@ -164,6 +174,9 @@ impl ExtendedChannel {
     /// Returns [`ExtendedChannelError::ScriptSigSizeTooLarge`] if the tags, the delimiters, the
     /// full extranonce and a worst-case coinbase prefix do not fit within the coinbase `scriptSig`
     /// budget, see [`JobFactory::fits_script_sig_budget`].
+    ///
+    /// `max_past_jobs` caps the past jobs retained under the current chain tip. `None` and
+    /// `Some(0)` both select the crate default.
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_job_declaration_client(
         channel_id: u32,
@@ -177,6 +190,7 @@ impl ExtendedChannel {
         expected_share_per_minute: f32,
         pool_tag_string: Option<String>,
         miner_tag_string: String,
+        max_past_jobs: Option<usize>,
     ) -> Result<Self, ExtendedChannelError> {
         Self::new(
             channel_id,
@@ -190,6 +204,7 @@ impl ExtendedChannel {
             expected_share_per_minute,
             pool_tag_string,
             Some(miner_tag_string),
+            max_past_jobs,
         )
     }
 
@@ -207,6 +222,7 @@ impl ExtendedChannel {
         expected_share_per_minute: f32,
         pool_tag: Option<String>,
         miner_tag: Option<String>,
+        max_past_jobs: Option<usize>,
     ) -> Result<Self, ExtendedChannelError> {
         let target =
             match hash_rate_to_target(nominal_hashrate.into(), expected_share_per_minute.into()) {
@@ -237,6 +253,13 @@ impl ExtendedChannel {
             return Err(ExtendedChannelError::ScriptSigSizeTooLarge);
         }
 
+        // fall back to the default when the caller has no opinion: `None`, or `Some(0)`, which
+        // would otherwise evict the just-retired job and reject the most common late share
+        let max_past_jobs = match max_past_jobs {
+            Some(cap) if cap > 0 => cap,
+            _ => MAX_PAST_JOBS,
+        };
+
         Ok(Self {
             channel_id,
             user_identity,
@@ -247,7 +270,7 @@ impl ExtendedChannel {
             job_id_to_target: HashMap::new(),
             nominal_hashrate,
             stable_hashrate: false,
-            job_store: JobStore::new(),
+            job_store: JobStore::new(max_past_jobs),
             job_factory,
             share_accounting: ShareAccounting::new(
                 share_batch_size,
@@ -1045,6 +1068,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1190,6 +1214,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1309,6 +1334,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1383,6 +1409,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1502,6 +1529,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1599,6 +1627,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1715,6 +1744,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -1841,6 +1871,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -1873,6 +1904,7 @@ mod tests {
             100,
             1.0,
             Some("x".repeat(pool_tag_len)),
+            None,
             None,
         )
     }
@@ -1988,6 +2020,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2071,6 +2104,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2135,6 +2169,7 @@ mod tests {
             100,
             1.0,
             String::new(),
+            None,
         )
         .unwrap();
 
@@ -2333,6 +2368,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2437,6 +2473,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2538,6 +2575,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2614,6 +2652,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -2725,6 +2764,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2795,6 +2835,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -2834,6 +2875,7 @@ mod tests {
             8u16,
             100,
             1.0,
+            None,
             None,
             None,
         )
@@ -2909,6 +2951,7 @@ mod tests {
             100,
             1.0,
             String::new(),
+            None,
         )
         .unwrap();
 
@@ -3021,6 +3064,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -3143,6 +3187,7 @@ mod tests {
             expected_share_per_minute,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3247,6 +3292,7 @@ mod tests {
             rollable_extranonce_size,
             share_batch_size,
             expected_share_per_minute,
+            None,
             None,
             None,
         )
@@ -3373,6 +3419,7 @@ mod tests {
             1.0,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -3429,6 +3476,93 @@ mod tests {
         }
     }
 
+    // Builds an extended channel with the given past-jobs cap, feeds it `templates`
+    // non-future templates (each retiring the previous active job), and returns how many past
+    // jobs survived.
+    fn retained_past_jobs(max_past_jobs: Option<usize>, templates: u64) -> usize {
+        let channel_id = 1;
+        let extranonce_prefix = [
+            83, 116, 114, 97, 116, 117, 109, 32, 86, 50, 32, 83, 82, 73, 32, 80, 111, 111, 108, 0,
+            0, 0, 0, 0, 0, 0, 1,
+        ]
+        .to_vec();
+        let mut channel = ExtendedChannel::new(
+            channel_id,
+            "user_identity".to_string(),
+            ExtranoncePrefix::from_wire(extranonce_prefix).unwrap(),
+            Target::from_le_bytes([0xff; 32]),
+            1.0,
+            true,
+            4u16,
+            100,
+            1.0,
+            None,
+            None,
+            max_past_jobs,
+        )
+        .unwrap();
+
+        let prev_hash = [
+            200, 53, 253, 129, 214, 31, 43, 84, 179, 58, 58, 76, 128, 213, 24, 53, 38, 144, 205,
+            88, 172, 20, 251, 22, 217, 141, 21, 221, 21, 0, 0, 0,
+        ]
+        .into();
+        channel.set_chain_tip(ChainTip::new(prev_hash, 503543726, 1747092633));
+
+        let pubkey_hash = [
+            235, 225, 183, 220, 194, 147, 204, 170, 14, 231, 67, 168, 111, 137, 223, 130, 88, 194,
+            8, 252,
+        ];
+        let mut script_bytes = vec![0];
+        script_bytes.push(20);
+        script_bytes.extend_from_slice(&pubkey_hash);
+        let coinbase_reward_outputs = vec![TxOut {
+            value: Amount::from_sat(SATS_AVAILABLE_IN_TEMPLATE),
+            script_pubkey: ScriptBuf::from(script_bytes),
+        }];
+
+        for template_id in 0..templates {
+            let template = NewTemplate {
+                template_id,
+                future_template: false,
+                version: 536870912,
+                coinbase_tx_version: 2,
+                coinbase_prefix: vec![82, 0].try_into().unwrap(),
+                coinbase_tx_input_sequence: 4294967295,
+                coinbase_tx_value_remaining: SATS_AVAILABLE_IN_TEMPLATE,
+                coinbase_tx_outputs_count: 1,
+                coinbase_tx_outputs: vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 38, 106, 36, 170, 33, 169, 237, 226, 246, 28, 63, 113,
+                    209, 222, 253, 63, 169, 153, 223, 163, 105, 83, 117, 92, 105, 6, 137, 121, 153,
+                    98, 180, 139, 235, 216, 54, 151, 78, 140, 249,
+                ]
+                .try_into()
+                .unwrap(),
+                coinbase_tx_locktime: 0,
+                merkle_path: vec![].try_into().unwrap(),
+            };
+            channel
+                .on_new_template(template, coinbase_reward_outputs.clone())
+                .unwrap();
+        }
+
+        (0..=templates as u32)
+            .filter(|job_id| channel.get_past_job(*job_id).is_some())
+            .count()
+    }
+
+    #[test]
+    fn test_max_past_jobs_override_and_zero_fallback() {
+        let templates = MAX_PAST_JOBS as u64 + 2;
+
+        // `None` and `Some(0)` both mean "no opinion" and select the default
+        assert_eq!(retained_past_jobs(None, templates), MAX_PAST_JOBS);
+        assert_eq!(retained_past_jobs(Some(0), templates), MAX_PAST_JOBS);
+
+        // a real override bounds below the default
+        assert_eq!(retained_past_jobs(Some(2), templates), 2);
+    }
+
     #[test]
     fn test_past_job_storage_is_bounded() {
         let channel_id = 1;
@@ -3447,6 +3581,7 @@ mod tests {
             4u16,
             100,
             1.0,
+            None,
             None,
             None,
         )
@@ -3535,6 +3670,7 @@ mod tests {
             8u16,
             100,
             1.0,
+            None,
             None,
             None,
         )
