@@ -68,7 +68,7 @@ fn setup_noise_states() -> (State, State) {
     // Complete handshake
     let first_message = sender_state.step_0().expect("Step 0 failed");
     let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] = first_message
-        .get_payload_when_handshaking()
+        .payload()
         .try_into()
         .expect("Invalid handshake message");
 
@@ -77,7 +77,7 @@ fn setup_noise_states() -> (State, State) {
         .expect("Step 1 failed");
     let second_message_bytes: [u8; noise_sv2::INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] =
         second_message
-            .get_payload_when_handshaking()
+            .payload()
             .try_into()
             .expect("Invalid handshake message");
 
@@ -143,18 +143,13 @@ fn bench_noise_handshake(c: &mut Criterion) {
             let mut receiver_state = State::initialized(HandshakeRole::Responder(responder));
 
             let first_message = sender_state.step_0().unwrap();
-            let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] = first_message
-                .get_payload_when_handshaking()
-                .try_into()
-                .unwrap();
+            let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] =
+                first_message.payload().try_into().unwrap();
 
             let (second_message, receiver_state) =
                 receiver_state.step_1(first_message_bytes).unwrap();
             let second_message_bytes: [u8; noise_sv2::INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] =
-                second_message
-                    .get_payload_when_handshaking()
-                    .try_into()
-                    .unwrap();
+                second_message.payload().try_into().unwrap();
 
             let sender_state = sender_state.step_2(second_message_bytes).unwrap();
             black_box((sender_state, receiver_state));

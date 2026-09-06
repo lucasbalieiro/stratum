@@ -31,7 +31,7 @@ use binary_sv2::Serialize;
 pub use buffer_sv2::AeadBuffer;
 use core::marker::PhantomData;
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::framing::HandShakeFrame;
+use framing_sv2::framing::HandshakeFrame;
 use framing_sv2::{
     framing::{Frame, SizeHint, Sv2Frame},
     header::Header,
@@ -259,7 +259,7 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
     // Processes and decodes a Sv2 frame during the Noise protocol handshake phase.
     //
     // Handles the decoding of a handshake frame from the `noise_buffer`. It converts the received
-    // data into a `HandShakeFrame` and encapsulates it into a `Frame` for further processing by
+    // data into a `HandshakeFrame` and encapsulates it into a `Frame` for further processing by
     // the codec.
     //
     // This is used exclusively during the initial handshake phase of the Noise protocol, before
@@ -272,10 +272,10 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
         // Conditionally call `.into()` based on `with_buffer_pool` feature to handle differences
         // between Clippy and test builds. See: https://github.com/stratum-mining/stratum/pull/1860#discussion_r2457908851
         #[cfg(feature = "with_buffer_pool")]
-        let frame = HandShakeFrame::from_bytes(src.into());
+        let frame = HandshakeFrame::from_bytes(src.into());
 
         #[cfg(not(feature = "with_buffer_pool"))]
-        let frame = HandShakeFrame::from_bytes(src);
+        let frame = HandshakeFrame::from_bytes(src);
 
         frame.into()
     }
@@ -855,12 +855,11 @@ mod prop_tests {
         let mut receiver_state = State::initialized(HandshakeRole::Responder(responder));
 
         let msg0 = sender_state.step_0().unwrap();
-        let msg0: [u8; ELLSWIFT_ENCODING_SIZE] =
-            msg0.get_payload_when_handshaking().try_into().unwrap();
+        let msg0: [u8; ELLSWIFT_ENCODING_SIZE] = msg0.payload().try_into().unwrap();
 
         let (msg1, receiver_transport) = receiver_state.step_1(msg0).unwrap();
         let msg1: [u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] =
-            msg1.get_payload_when_handshaking().try_into().unwrap();
+            msg1.payload().try_into().unwrap();
 
         let sender_transport = sender_state.step_2(msg1).unwrap();
         let sender_state = match sender_transport {

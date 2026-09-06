@@ -10,7 +10,7 @@
 //! Two types of frames are defined. The most common frame is [`crate::framing::Sv2Frame`] and is
 //! used for almost all messages passed between Sv2 roles. It consists of a
 //! [`crate::header::Header`] followed by the serialized message payload. The
-//! [`crate::framing::HandShakeFrame`] is used exclusively during the Noise handshake process,
+//! [`crate::framing::HandshakeFrame`] is used exclusively during the Noise handshake process,
 //! performed between Sv2 roles at the beginning of their communication. This frame is used until
 //! the handshake state progresses to transport mode. After that, all subsequent messages use
 //! [`crate::framing::Sv2Frame`]. No header is included in the handshake frame.
@@ -53,11 +53,11 @@ impl core::fmt::Display for SizeHint {
 /// Represents either an Sv2 frame or a handshake frame.
 ///
 /// A wrapper used when generic reference to a frame is needed, but the kind of frame ([`Sv2Frame`]
-/// or [`HandShakeFrame`]) does not matter. Note that after the initial handshake is complete
+/// or [`HandshakeFrame`]) does not matter. Note that after the initial handshake is complete
 /// between two Sv2 roles, all further messages are framed with [`Sv2Frame`].
 #[derive(Debug)]
 pub enum Frame<T, B> {
-    HandShake(HandShakeFrame),
+    HandShake(HandshakeFrame),
     Sv2(Sv2Frame<T, B>),
 }
 
@@ -70,8 +70,8 @@ impl<T: Serialize + GetSize, B: AsMut<[u8]> + AsRef<[u8]>> Frame<T, B> {
     }
 }
 
-impl<T, B> From<HandShakeFrame> for Frame<T, B> {
-    fn from(v: HandShakeFrame) -> Self {
+impl<T, B> From<HandshakeFrame> for Frame<T, B> {
+    fn from(v: HandshakeFrame) -> Self {
         Self::HandShake(v)
     }
 }
@@ -246,31 +246,43 @@ impl<T, B> TryFrom<Frame<T, B>> for Sv2Frame<T, B> {
 /// handshake process. Once the handshake is complete, regular Sv2 communication switches to
 /// [`Sv2Frame`] for ongoing communication.
 #[derive(Debug)]
-pub struct HandShakeFrame {
+pub struct HandshakeFrame {
     payload: Slice,
 }
 
-impl HandShakeFrame {
-    /// Returns payload of [`HandShakeFrame`] as a [`Vec<u8>`].
-    pub fn get_payload_when_handshaking(&self) -> Vec<u8> {
-        self.payload[0..].to_vec()
-    }
-
-    /// Builds a [`HandShakeFrame`] from raw bytes. Nothing is assumed or checked about the
+impl HandshakeFrame {
+    /// Builds a [`HandshakeFrame`] from raw bytes. Nothing is assumed or checked about the
     /// correctness of the payload.
     #[inline]
     pub fn from_bytes(bytes: Slice) -> Self {
         Self { payload: bytes }
     }
 
-    // Returns the size of the [`HandShakeFrame`] payload.
+    /// Builds a [`HandshakeFrame`] that carries a copy of `message`, the bytes a Noise handshake
+    /// step produced.
+    #[allow(clippy::useless_conversion)]
+    pub fn from_message<T: AsRef<[u8]>>(message: T) -> Self {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(message.as_ref());
+        Self {
+            payload: payload.into(),
+        }
+    }
+
+    /// Returns the payload of the [`HandshakeFrame`].
+    #[inline]
+    pub fn payload(&self) -> &[u8] {
+        self.payload.as_ref()
+    }
+
+    // Returns the size of the [`HandshakeFrame`] payload.
     #[inline]
     fn encoded_length(&self) -> usize {
         self.payload.len()
     }
 }
 
-impl<T, B> TryFrom<Frame<T, B>> for HandShakeFrame {
+impl<T, B> TryFrom<Frame<T, B>> for HandshakeFrame {
     type Error = Error;
 
     fn try_from(v: Frame<T, B>) -> Result<Self, Error> {
@@ -278,16 +290,6 @@ impl<T, B> TryFrom<Frame<T, B>> for HandShakeFrame {
             Frame::HandShake(frame) => Ok(frame),
             Frame::Sv2(_) => Err(Error::ExpectedHandshakeFrame),
         }
-    }
-}
-
-/// Returns a [`HandShakeFrame`] from a generic byte array.
-#[allow(clippy::useless_conversion)]
-pub fn handshake_message_to_frame<T: AsRef<[u8]>>(message: T) -> HandShakeFrame {
-    let mut payload = Vec::new();
-    payload.extend_from_slice(message.as_ref());
-    HandShakeFrame {
-        payload: payload.into(),
     }
 }
 
@@ -567,13 +569,13 @@ mod tests {
     fn prop_handshake_frame_roundtrip(payload: Vec<u8>) {
         let payload: Vec<u8> = payload.iter().take(1000).copied().collect();
 
-        let frame = handshake_message_to_frame(&payload);
-        let recovered = frame.get_payload_when_handshaking();
+        let frame = HandshakeFrame::from_message(&payload);
+        let recovered = frame.payload();
 
         assert_eq!(
             recovered,
             payload,
-            "HandShakeFrame roundtrip should preserve payload exactly (size: {})",
+            "HandshakeFrame roundtrip should preserve payload exactly (size: {})",
             payload.len()
         );
     }
@@ -583,12 +585,12 @@ mod tests {
         let payload: Vec<u8> = payload.iter().take(1000).copied().collect();
         let expected_len = payload.len();
 
-        let frame = handshake_message_to_frame(&payload);
+        let frame = HandshakeFrame::from_message(&payload);
 
         assert_eq!(
             frame.encoded_length(),
             expected_len,
-            "HandShakeFrame encoded_length should equal payload length"
+            "HandshakeFrame encoded_length should equal payload length"
         );
     }
 
@@ -596,9 +598,9 @@ mod tests {
     fn prop_handshake_frame_from_bytes(payload: Vec<u8>) {
         let payload: Vec<u8> = payload.iter().take(1000).copied().collect();
 
-        let frame = HandShakeFrame::from_bytes(payload.clone().into());
+        let frame = HandshakeFrame::from_bytes(payload.clone().into());
 
-        let recovered = frame.get_payload_when_handshaking();
+        let recovered = frame.payload();
         assert_eq!(
             recovered,
             payload,

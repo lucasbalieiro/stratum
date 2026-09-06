@@ -30,7 +30,7 @@ use buffer_sv2::AeadBuffer;
 #[cfg(feature = "noise_sv2")]
 use core::convert::TryInto;
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::framing::{Frame, HandShakeFrame};
+use framing_sv2::framing::{Frame, HandshakeFrame};
 #[cfg(feature = "noise_sv2")]
 use framing_sv2::SV2_FRAME_HEADER_SIZE;
 
@@ -231,8 +231,8 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
     #[inline(never)]
     fn while_handshaking(&mut self, item: Item<T, B>) -> Result<()> {
         // ENCODE THE SV2 FRAME
-        let i: HandShakeFrame = item.try_into().map_err(Error::FramingError)?;
-        let payload = i.get_payload_when_handshaking();
+        let i: HandshakeFrame = item.try_into().map_err(Error::FramingError)?;
+        let payload = i.payload();
         let wrtbl = self.noise_buffer.get_writable(payload.len());
         for (i, b) in payload.iter().enumerate() {
             wrtbl[i] = *b;
@@ -442,12 +442,11 @@ mod prop_tests {
         let mut receiver_state = State::initialized(HandshakeRole::Responder(responder));
 
         let msg0 = sender_state.step_0().unwrap();
-        let msg0: [u8; ELLSWIFT_ENCODING_SIZE] =
-            msg0.get_payload_when_handshaking().try_into().unwrap();
+        let msg0: [u8; ELLSWIFT_ENCODING_SIZE] = msg0.payload().try_into().unwrap();
 
         let (msg1, receiver_transport) = receiver_state.step_1(msg0).unwrap();
         let msg1: [u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] =
-            msg1.get_payload_when_handshaking().try_into().unwrap();
+            msg1.payload().try_into().unwrap();
 
         let sender_transport = sender_state.step_2(msg1).unwrap();
         let sender_state = match sender_transport {

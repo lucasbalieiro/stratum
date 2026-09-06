@@ -47,17 +47,12 @@ fn setup_noise_engine_pair() -> (
     let mut receiver_state = State::initialized(HandshakeRole::Responder(responder));
 
     let first_message = sender_state.step_0().unwrap();
-    let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] = first_message
-        .get_payload_when_handshaking()
-        .try_into()
-        .unwrap();
+    let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] =
+        first_message.payload().try_into().unwrap();
 
     let (second_message, receiver_state) = receiver_state.step_1(first_message_bytes).unwrap();
     let second_message_bytes: [u8; noise_sv2::INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] =
-        second_message
-            .get_payload_when_handshaking()
-            .try_into()
-            .unwrap();
+        second_message.payload().try_into().unwrap();
 
     let sender_state = sender_state.step_2(second_message_bytes).unwrap();
 
@@ -173,10 +168,8 @@ fn bench_noise_handshake_steps(c: &mut Criterion) {
         let mut sender_state = State::initialized(HandshakeRole::Initiator(initiator));
 
         let first_message = sender_state.step_0().unwrap();
-        let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] = first_message
-            .get_payload_when_handshaking()
-            .try_into()
-            .unwrap();
+        let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] =
+            first_message.payload().try_into().unwrap();
 
         b.iter(|| {
             let responder = Responder::from_authority_kp(

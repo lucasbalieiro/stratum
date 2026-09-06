@@ -27,7 +27,7 @@
 //! Before Sv2 roles can communicate securely, they must perform a Noise handshake (note that Noise
 //! encryption is optional for communication between two local Sv2 roles (i.e. a local mining
 //! device and a local mining proxy), but required between two remote Sv2 roles (i.e. a local
-//! mining proxy and a remote pool)). During this process, the [`framing::HandShakeFrame`] is used
+//! mining proxy and a remote pool)). During this process, the [`framing::HandshakeFrame`] is used
 //! to transmit encrypted messages between the roles. After the handshake is completed and the
 //! connection transitions into transport mode, [`framing::Sv2Frame`] is used for all messages.
 //!

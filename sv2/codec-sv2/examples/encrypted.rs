@@ -125,7 +125,7 @@ fn main() {
         .step_0()
         .expect("Initiator failed first step of handshake");
     let first_message: [u8; ELLSWIFT_ENCODING_SIZE] = first_message
-        .get_payload_when_handshaking()
+        .payload()
         .try_into()
         .expect("Handshake remote invlaid message");
 
@@ -143,7 +143,7 @@ fn main() {
         .step_1_with_now_rng(first_message, now, &mut rand::thread_rng())
         .expect("Responder failed second step of handshake");
     let second_message: [u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] = second_message
-        .get_payload_when_handshaking()
+        .payload()
         .try_into()
         .expect("Handshake remote invlaid message");
 

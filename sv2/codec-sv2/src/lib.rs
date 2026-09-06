@@ -42,7 +42,7 @@ use alloc::boxed::Box;
 #[cfg(feature = "noise_sv2")]
 use buffer_sv2::AeadBuffer;
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::framing::{handshake_message_to_frame as h2f, HandShakeFrame};
+use framing_sv2::framing::HandshakeFrame;
 #[cfg(feature = "noise_sv2")]
 use framing_sv2::{header::Header, SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
 #[cfg(feature = "noise_sv2")]
@@ -166,13 +166,16 @@ impl State {
     /// Creates and sends the initial handshake message for the initiator. It is the first step in
     /// establishing a secure communication channel. Responders cannot perform this step.
     ///
-    /// nb: This method returns a [`HandShakeFrame`] but does not change the current state
+    /// nb: This method returns a [`HandshakeFrame`] but does not change the current state
     /// (`self`). The state remains `State::HandShake(HandshakeRole::Initiator)` until `step_1` is
     /// called to advance the handshake process.
-    pub fn step_0(&mut self) -> core::result::Result<HandShakeFrame, Error> {
+    pub fn step_0(&mut self) -> core::result::Result<HandshakeFrame, Error> {
         match self {
             Self::HandShake(h) => match h {
-                HandshakeRole::Initiator(i) => i.step_0().map_err(|e| e.into()).map(h2f),
+                HandshakeRole::Initiator(i) => i
+                    .step_0()
+                    .map_err(|e| e.into())
+                    .map(HandshakeFrame::from_message),
                 HandshakeRole::Responder(_) => Err(Error::InvalidStepForResponder),
             },
             _ => Err(Error::NotInHandShakeState),
@@ -192,7 +195,7 @@ impl State {
     pub fn step_1(
         &mut self,
         re_pub: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE],
-    ) -> core::result::Result<(HandShakeFrame, Self), Error> {
+    ) -> core::result::Result<(HandshakeFrame, Self), Error> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -215,12 +218,15 @@ impl State {
         re_pub: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE],
         now: u32,
         rng: &mut R,
-    ) -> core::result::Result<(HandShakeFrame, Self), Error> {
+    ) -> core::result::Result<(HandshakeFrame, Self), Error> {
         match self {
             Self::HandShake(h) => match h {
                 HandshakeRole::Responder(r) => {
                     let (message, engine) = r.step_1_with_now_rng(re_pub, now, rng)?;
-                    Ok((h2f(message), Self::Transport(engine)))
+                    Ok((
+                        HandshakeFrame::from_message(message),
+                        Self::Transport(engine),
+                    ))
                 }
                 HandshakeRole::Initiator(_) => Err(Error::InvalidStepForInitiator),
             },
@@ -457,14 +463,12 @@ mod tests {
         let first_message: [u8; ELLSWIFT_ENCODING_SIZE] = initiator_state
             .step_0()
             .unwrap()
-            .get_payload_when_handshaking()
+            .payload()
             .try_into()
             .unwrap();
         let (second_message, responder_state) = responder_state.step_1(first_message).unwrap();
-        let second_message: [u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] = second_message
-            .get_payload_when_handshaking()
-            .try_into()
-            .unwrap();
+        let second_message: [u8; INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] =
+            second_message.payload().try_into().unwrap();
         let initiator_state = initiator_state.step_2(second_message).unwrap();
 
         assert!(initiator_state.is_transport());
