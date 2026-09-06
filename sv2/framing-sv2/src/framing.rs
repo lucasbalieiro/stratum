@@ -106,7 +106,7 @@ impl<T: Serialize + GetSize, B: AsMut<[u8]> + AsRef<[u8]>> Sv2Frame<T, B> {
             dst.swap_with_slice(serialized.as_mut());
             Ok(())
         } else if let Some(payload) = self.payload {
-            to_writer(self.header, dst).map_err(Error::BinarySv2Error)?;
+            self.header.write_into(dst)?;
             to_writer(payload, &mut dst[Header::SIZE..]).map_err(Error::BinarySv2Error)?;
             Ok(())
         } else {
@@ -384,6 +384,38 @@ mod tests {
                 msg.get_size()
             );
         }
+    }
+
+    /// The hand-written header serializer must agree byte for byte with the derived one it
+    /// replaced, and round-trip through `Header::from_bytes`.
+    #[quickcheck]
+    fn prop_header_write_into_matches_the_derived_encoding(
+        msg_length: ValidU24,
+        msg_type: u8,
+        extension_type: u16,
+    ) {
+        let header = Header::from_len(msg_length.0, msg_type, extension_type).unwrap();
+
+        let mut hand = [0u8; Header::SIZE];
+        header.write_into(&mut hand).unwrap();
+
+        let mut derived = [0u8; Header::SIZE];
+        binary_sv2::to_writer(header, &mut derived).unwrap();
+        assert_eq!(hand, derived);
+
+        let parsed = Header::from_bytes(&hand).unwrap();
+        assert_eq!(parsed.payload_length(), msg_length.0 as usize);
+        assert_eq!(parsed.msg_type(), msg_type);
+    }
+
+    #[test]
+    fn header_write_into_rejects_a_short_destination() {
+        let header = Header::from_len(0, 0, 0).unwrap();
+        let mut dst = [0u8; Header::SIZE - 1];
+        assert_eq!(
+            header.write_into(&mut dst[..]),
+            Err(Error::UnexpectedHeaderLength(Header::SIZE - 1))
+        );
     }
 
     #[quickcheck]
