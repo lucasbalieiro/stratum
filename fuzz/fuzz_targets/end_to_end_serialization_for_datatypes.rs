@@ -4,13 +4,14 @@ use arbitrary::Arbitrary;
 mod common;
 
 use binary_sv2::{
-    Decodable, Encodable, GetSize, PubKey, Seq0255, Seq064K, Signature, Str0255, Sv2Option,
+    Decodable, Encodable, GetSize, Mac, PubKey, Seq0255, Seq064K, Signature, Str0255, Sv2Option,
     B016M, B0255, B032, B064K, U24, U256,
 };
 use libfuzzer_sys::fuzz_target;
 
 #[derive(Arbitrary, Debug)]
 enum FuzzInput {
+    Mac(Vec<u8>),
     PubKey(Vec<u8>),
     Signature(Vec<u8>),
     Str0255(Vec<u8>),
@@ -73,6 +74,7 @@ enum FuzzInput {
 
 fuzz_target!(|input: FuzzInput| {
     match input {
+        FuzzInput::Mac(data) => test_datatype_roundtrip!(Mac, data),
         FuzzInput::PubKey(data) => test_datatype_roundtrip!(PubKey, data),
         FuzzInput::Signature(data) => test_datatype_roundtrip!(Signature, data),
         FuzzInput::Str0255(data) => test_datatype_roundtrip!(Str0255, data),
