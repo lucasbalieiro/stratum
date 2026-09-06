@@ -194,6 +194,90 @@ macro_rules! test_datatype_roundtrip {
             );
         }
     }};
+
+    // ---- generator mode: bool ----
+    // Generator produces canonical 0x00/0x01. Parse must succeed.
+    // Canonicalization check: LSB of input must match encoded output.
+    (bool, $data:expr, $gen:expr) => {{
+        let mut u = arbitrary::Unstructured::new(&$data);
+        if let Ok(bytes) = $gen(&mut u) {
+            let mut bytes = bytes;
+            let parsed = bool::from_bytes(&mut bytes)
+                .expect("generator produced unparseable bytes");
+
+            let mut encoded = vec![0u8; parsed.get_size()];
+            parsed
+                .to_bytes(&mut encoded)
+                .expect("Bool encoding failed after a successful parse");
+
+            let reparsed = bool::from_bytes(&mut encoded)
+                .expect("Bytes from a valid bool should be parseable");
+
+            assert_eq!(parsed, reparsed, "Bool roundtrip is not stable");
+            assert_eq!(encoded[0] & 1, encoded[0], "Bool encoding is not canonical");
+        }
+    }};
+
+    // ---- generator mode: f32 ----
+    // Generator produces IEEE-754 bytes. Parse must succeed.
+    // Bit-level comparison for NaN payloads.
+    (f32, $data:expr, $gen:expr) => {{
+        let mut u = arbitrary::Unstructured::new(&$data);
+        if let Ok(bytes) = $gen(&mut u) {
+            let mut bytes = bytes;
+            let parsed = f32::from_bytes(&mut bytes)
+                .expect("generator produced unparseable bytes");
+
+            let mut encoded = vec![0u8; parsed.get_size()];
+            parsed
+                .to_bytes(&mut encoded)
+                .expect("Encoding failed after a successful parse");
+
+            let reparsed = f32::from_bytes(&mut encoded)
+                .expect("Bytes from a valid f32 should be parseable");
+
+            assert_eq!(
+                parsed.to_bits(),
+                reparsed.to_bits(),
+                "Float roundtrip is not bit-stable"
+            );
+            assert_eq!(
+                encoded,
+                bytes[..encoded.len()],
+                "Serialization is not stable"
+            );
+        }
+    }};
+
+    // ---- generator mode: generic ----
+    // Generator produces valid wire bytes. Parse must succeed.
+    // Byte stability assertion.
+    ($datatype:ty, $data:expr, $gen:expr) => {{
+        let mut u = arbitrary::Unstructured::new(&$data);
+        if let Ok(bytes) = $gen(&mut u) {
+            let mut bytes = bytes;
+            let parsed = <$datatype>::from_bytes(&mut bytes)
+                .expect("generator produced unparseable bytes");
+
+            let mut encoded_1 = vec![0u8; parsed.get_size()];
+            parsed
+                .clone()
+                .to_bytes(&mut encoded_1)
+                .expect("Encoding failed after a successful parse");
+
+            let mut encoded_1_clone = encoded_1.clone();
+            let reparsed = <$datatype>::from_bytes(&mut encoded_1_clone)
+                .expect("Roundtrip failed: serializer produced invalid bytes");
+
+            let mut encoded_2 = vec![0u8; reparsed.get_size()];
+            reparsed
+                .clone()
+                .to_bytes(&mut encoded_2)
+                .expect("Second encoding failed");
+
+            assert_eq!(encoded_1, encoded_2, "Serialization is not stable");
+        }
+    }};
 }
 
 /// WARNING: Generated with OpenAI's GPT-5.5 free model
