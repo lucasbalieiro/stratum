@@ -3,7 +3,7 @@
 
 use binary_sv2::{B016MOwned, Serialize};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::{EncodableFrame, SerializedSv2Frame, Sv2Frame};
 
 // Type alias for buffer backend - Vec or buffer_pool::Slice
 #[cfg(not(feature = "with_buffer_pool"))]
@@ -61,7 +61,7 @@ fn bench_from_message(c: &mut Criterion) {
     for &size in PAYLOAD_SIZES {
         let test = Test::new(size);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| Sv2Frame::<Test, Slice>::from_message(test.clone(), 1, 0, false).unwrap())
+            b.iter(|| Sv2Frame::<Test>::from_message(test.clone(), 1, 0, false).unwrap())
         });
     }
 
@@ -74,13 +74,13 @@ fn bench_serialize(c: &mut Criterion) {
 
     for &size in PAYLOAD_SIZES {
         let frame =
-            Sv2Frame::<Test, Slice>::from_bytes(frame_from_payload_size(size).into()).unwrap();
+            SerializedSv2Frame::<Slice>::from_bytes(frame_from_payload_size(size).into()).unwrap();
 
         let mut buf = vec![0u8; frame.encoded_length()];
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
             b.iter(|| {
-                frame.clone().serialize(&mut buf).unwrap();
+                frame.clone().encode_into(&mut buf).unwrap();
             })
         });
     }
@@ -95,21 +95,21 @@ fn bench_from_bytes(c: &mut Criterion) {
     for &size in PAYLOAD_SIZES {
         let frame = frame_from_payload_size(size);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| Sv2Frame::<Test, _>::from_bytes(black_box(frame.clone())).unwrap())
+            b.iter(|| SerializedSv2Frame::<_>::from_bytes(black_box(frame.clone())).unwrap())
         });
     }
 
     group.finish();
 }
 
-// Benchmarks calculating frame size from partial data
-fn bench_size_hint(c: &mut Criterion) {
-    let mut group = c.benchmark_group(format!("sv2frame::size_hint::{BACKEND}"));
+// Benchmarks parsing the header out of, and checking it against, a whole frame
+fn bench_parse_header(c: &mut Criterion) {
+    let mut group = c.benchmark_group(format!("sv2frame::parse_header::{BACKEND}"));
 
     for &size in PAYLOAD_SIZES {
         let frame = frame_from_payload_size(size);
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| Sv2Frame::<Test, Slice>::size_hint(black_box(&frame)))
+            b.iter(|| SerializedSv2Frame::<Slice>::parse_header(black_box(&frame)))
         });
     }
 
@@ -121,7 +121,7 @@ criterion_group!(
     bench_from_message,
     bench_serialize,
     bench_from_bytes,
-    bench_size_hint
+    bench_parse_header
 );
 
 criterion_main!(framing);

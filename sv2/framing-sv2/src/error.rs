@@ -10,9 +10,15 @@ use crate::SV2_FRAME_HEADER_SIZE;
 pub enum Error {
     /// Binary Sv2 data format error.
     BinarySv2Error(binary_sv2::Error),
-    ExpectedHandshakeFrame,
-    ExpectedSv2Frame,
-    MissingHeader,
+
+    /// The buffer passed to [`crate::framing::Sv2Frame::serialize`] is shorter than the frame.
+    DestinationTooShort {
+        /// Length the encoded frame needs.
+        required: usize,
+        /// Length of the buffer that was passed.
+        actual: usize,
+    },
+
     /// The buffer is too short to hold a [`crate::header::Header`].
     UnexpectedHeaderLength(usize),
 }
@@ -24,16 +30,10 @@ impl fmt::Display for Error {
             BinarySv2Error(ref e) => {
                 write!(f, "BinarySv2Error: `{e}`")
             }
-            ExpectedHandshakeFrame => {
-                write!(f, "Expected `HandshakeFrame`, received `Sv2Frame`")
-            }
-            ExpectedSv2Frame => {
-                write!(f, "Expected `Sv2Frame`, received `HandshakeFrame`")
-            }
-            MissingHeader => {
+            DestinationTooShort { required, actual } => {
                 write!(
                     f,
-                    "Frame is missing a header. All frames (Handshake or Sv2) must have a header"
+                    "Destination buffer is `{actual}` bytes long, the encoded frame needs `{required}`"
                 )
             }
             UnexpectedHeaderLength(actual_size) => {

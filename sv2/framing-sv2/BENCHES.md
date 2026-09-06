@@ -120,19 +120,19 @@ Found 12 outliers among 100 measurements (12.00%)
   5 (5.00%) high mild
   7 (7.00%) high severe
 
-sv2frame::size_hint::vec/64                                                                             
+sv2frame::parse_header::vec/64                                                                             
                         time:   [1.2012 ns 1.2342 ns 1.2644 ns]
                         change: [-25.217% -22.569% -19.939%] (p = 0.00 < 0.05)
                         Performance has improved.
 Found 1 outliers among 100 measurements (1.00%)
   1 (1.00%) high mild
-sv2frame::size_hint::vec/1024                                                                             
+sv2frame::parse_header::vec/1024                                                                             
                         time:   [1.1273 ns 1.1468 ns 1.1710 ns]
                         change: [-0.1114% +1.7750% +3.7801%] (p = 0.08 > 0.05)
                         No change in performance detected.
 Found 1 outliers among 100 measurements (1.00%)
   1 (1.00%) high mild
-sv2frame::size_hint::vec/16384                                                                             
+sv2frame::parse_header::vec/16384                                                                             
                         time:   [1.1781 ns 1.2500 ns 1.3239 ns]
                         change: [+1.9829% +4.9658% +8.5225%] (p = 0.00 < 0.05)
                         Performance has regressed.
@@ -140,13 +140,13 @@ Found 14 outliers among 100 measurements (14.00%)
   1 (1.00%) low mild
   2 (2.00%) high mild
   11 (11.00%) high severe
-sv2frame::size_hint::vec/61440                                                                             
+sv2frame::parse_header::vec/61440                                                                             
                         time:   [1.3766 ns 1.4595 ns 1.5390 ns]
                         change: [+7.6169% +11.988% +16.344%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 5 outliers among 100 measurements (5.00%)
   5 (5.00%) high mild
-sv2frame::size_hint::vec/16777215                                                                             
+sv2frame::parse_header::vec/16777215                                                                             
                         time:   [1.5091 ns 1.5987 ns 1.6999 ns]
                         change: [+42.762% +49.031% +56.621%] (p = 0.00 < 0.05)
                         Performance has regressed.
@@ -279,35 +279,35 @@ sv2frame::from_bytes::buffer_pool/16777215
 Found 2 outliers among 100 measurements (2.00%)
   2 (2.00%) high mild
 
-sv2frame::size_hint::buffer_pool/64                                                                             
+sv2frame::parse_header::buffer_pool/64                                                                             
                         time:   [2.5779 ns 2.6914 ns 2.8120 ns]
                         change: [+148.04% +154.29% +161.11%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 7 outliers among 100 measurements (7.00%)
   5 (5.00%) high mild
   2 (2.00%) high severe
-sv2frame::size_hint::buffer_pool/1024                                                                             
+sv2frame::parse_header::buffer_pool/1024                                                                             
                         time:   [1.4478 ns 1.4800 ns 1.5197 ns]
                         change: [+12.584% +19.618% +27.035%] (p = 0.00 < 0.05)
                         Performance has regressed.
 Found 8 outliers among 100 measurements (8.00%)
   5 (5.00%) high mild
   3 (3.00%) high severe
-sv2frame::size_hint::buffer_pool/16384                                                                             
+sv2frame::parse_header::buffer_pool/16384                                                                             
                         time:   [1.1489 ns 1.1631 ns 1.1809 ns]
                         change: [-17.428% -14.719% -12.077%] (p = 0.00 < 0.05)
                         Performance has improved.
 Found 10 outliers among 100 measurements (10.00%)
   9 (9.00%) high mild
   1 (1.00%) high severe
-sv2frame::size_hint::buffer_pool/61440                                                                             
+sv2frame::parse_header::buffer_pool/61440                                                                             
                         time:   [1.1750 ns 1.1822 ns 1.1899 ns]
                         change: [-19.516% -17.962% -16.482%] (p = 0.00 < 0.05)
                         Performance has improved.
 Found 4 outliers among 100 measurements (4.00%)
   2 (2.00%) high mild
   2 (2.00%) high severe
-sv2frame::size_hint::buffer_pool/16777215                                                                             
+sv2frame::parse_header::buffer_pool/16777215                                                                             
                         time:   [1.2321 ns 1.2721 ns 1.3189 ns]
 Found 7 outliers among 100 measurements (7.00%)
   4 (4.00%) high mild
