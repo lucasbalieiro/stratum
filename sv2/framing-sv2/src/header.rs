@@ -55,7 +55,7 @@ impl Header {
     #[inline]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() < Self::SIZE {
-            return Err(Error::UnexpectedHeaderLength(bytes.len() as isize));
+            return Err(Error::UnexpectedHeaderLength(bytes.len()));
         };
         let extension_type = u16::from_le_bytes([bytes[0], bytes[1]]);
         let msg_type = bytes[2];
@@ -67,10 +67,9 @@ impl Header {
         })
     }
 
-    // Get the payload length
-    #[allow(clippy::len_without_is_empty)]
+    /// Length of the payload the header declares, not including the header itself.
     #[inline]
-    pub(crate) fn len(&self) -> usize {
+    pub fn payload_length(&self) -> usize {
         let inner: u32 = self.msg_length.into();
         inner as usize
     }
@@ -122,7 +121,7 @@ impl Header {
     /// for the MACs.
     #[allow(clippy::manual_div_ceil)]
     pub fn encrypted_len(&self) -> usize {
-        let len = self.len();
+        let len = self.payload_length();
         let payload_per_chunk = SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN;
 
         let chunks = (len + payload_per_chunk - 1) / payload_per_chunk;
@@ -279,7 +278,7 @@ mod tests {
         let header = Header::from_len(msg_length.0, 0x01, 0x0000).unwrap();
 
         assert_eq!(
-            header.len(),
+            header.payload_length(),
             msg_length.0 as usize,
             "Header len() should match the msg_length used to create it"
         );

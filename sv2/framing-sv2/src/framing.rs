@@ -173,7 +173,7 @@ impl<T: Serialize + GetSize, B: AsMut<[u8]> + AsRef<[u8]>> Sv2Frame<T, B> {
         let Ok(header) = Header::from_bytes(bytes) else {
             return SizeHint::Missing(Header::SIZE.saturating_sub(bytes.len()));
         };
-        let expected = Header::SIZE + header.len();
+        let expected = Header::SIZE + header.payload_length();
         match bytes.len().cmp(&expected) {
             Ordering::Less => SizeHint::Missing(expected - bytes.len()),
             Ordering::Equal => SizeHint::Exact,
@@ -451,7 +451,7 @@ mod tests {
             "Extension type should match after roundtrip"
         );
         assert_eq!(
-            header.len(),
+            header.payload_length(),
             msg.get_size(),
             "Payload length should match after roundtrip"
         );

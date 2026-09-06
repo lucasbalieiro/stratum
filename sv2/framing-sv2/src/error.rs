@@ -13,7 +13,8 @@ pub enum Error {
     ExpectedHandshakeFrame,
     ExpectedSv2Frame,
     MissingHeader,
-    UnexpectedHeaderLength(isize),
+    /// The buffer is too short to hold a [`crate::header::Header`].
+    UnexpectedHeaderLength(usize),
 }
 
 impl fmt::Display for Error {
