@@ -423,6 +423,7 @@ dependencies = [
  "chacha20poly1305",
  "rand",
  "secp256k1 0.28.2",
+ "zeroize",
 ]
 
 [[package]]
