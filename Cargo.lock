@@ -323,7 +323,6 @@ dependencies = [
  "quickcheck_macros",
  "rand",
  "rayon-core",
- "tracing",
 ]
 
 [[package]]

@@ -36,9 +36,6 @@ use framing_sv2::{ENCRYPTED_SV2_FRAME_HEADER_SIZE, SV2_FRAME_CHUNK_SIZE, SV2_FRA
 #[cfg(feature = "noise_sv2")]
 use noise_sv2::AEAD_MAC_LEN;
 
-#[cfg(feature = "tracing")]
-use tracing::error;
-
 #[cfg(feature = "noise_sv2")]
 use crate::{Error, Result, State, TransportEncryptState};
 
@@ -190,11 +187,7 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
         let writable = self.sv2_buffer.get_writable(len);
 
         // ENCODE THE SV2 FRAME
-        let i: Sv2Frame<T, B::Slice> = item.try_into().map_err(|e| {
-            #[cfg(feature = "tracing")]
-            error!("Error while encoding 1 frame: {:?}", e);
-            Error::FramingError(e)
-        })?;
+        let i: Sv2Frame<T, B::Slice> = item.try_into().map_err(Error::FramingError)?;
         i.serialize(writable)?;
 
         let sv2 = self.sv2_buffer.get_data_owned();
@@ -237,11 +230,7 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
     #[inline(never)]
     fn while_handshaking(&mut self, item: Item<T, B>) -> Result<()> {
         // ENCODE THE SV2 FRAME
-        let i: HandShakeFrame = item.try_into().map_err(|e| {
-            #[cfg(feature = "tracing")]
-            error!("Error while encoding 2 frame - while_handshaking: {:?}", e);
-            Error::FramingError(e)
-        })?;
+        let i: HandShakeFrame = item.try_into().map_err(Error::FramingError)?;
         let payload = i.get_payload_when_handshaking();
         let wrtbl = self.noise_buffer.get_writable(payload.len());
         for (i, b) in payload.iter().enumerate() {
