@@ -24,8 +24,7 @@ use alloc::vec::Vec;
 use binary_sv2::{Deserialize, Serialize, U24};
 use core::convert::TryInto;
 
-use crate::{SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
-use noise_sv2::AEAD_MAC_LEN;
+use crate::SV2_FRAME_HEADER_SIZE;
 
 /// Abstraction for a Sv2 Frame Header.
 #[derive(Debug, Serialize, Deserialize, Copy, Clone)]
@@ -120,28 +119,6 @@ impl Header {
     /// A header can represent a channel message if the MSB(Most Significant Bit) is set.
     pub fn channel_msg(&self) -> bool {
         self.extension_type & Self::CHANNEL_MSG_MASK != 0
-    }
-
-    /// Calculates the total length of a chunked message, accounting for MAC overhead.
-    ///
-    /// Determines the total length of the message frame, including the overhead introduced by
-    /// MACs. If the message is split into multiple chunks (due to its size exceeding the maximum
-    /// frame chunk size), each chunk requires a MAC for integrity verification.
-    ///
-    /// This method is particularly relevant when the message is being encrypted using the Noise
-    /// protocol, where the payload is divided into encrypted chunks, and each chunk is appended
-    /// with a MAC. However, it can also be applied to non-encrypted chunked messages to calculate
-    /// their total length.
-    ///
-    /// The calculated length includes the full payload length and any additional space required
-    /// for the MACs.
-    #[allow(clippy::manual_div_ceil)]
-    pub fn encrypted_len(&self) -> usize {
-        let len = self.payload_length();
-        let payload_per_chunk = SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN;
-
-        let chunks = (len + payload_per_chunk - 1) / payload_per_chunk;
-        len + chunks * AEAD_MAC_LEN
     }
 }
 
@@ -269,23 +246,6 @@ mod tests {
             without_channel, expected,
             "ext_type_without_channel_msg() should clear MSB: got 0x{:04X}, expected 0x{:04X}",
             without_channel, expected
-        );
-    }
-
-    #[quickcheck]
-    fn prop_header_encrypted_len_calculation(msg_length: ValidU24) {
-        let header = Header::from_len(msg_length.0, 0x01, 0x0000).unwrap();
-
-        let encrypted_len = header.encrypted_len();
-        let aead_mac_len = AEAD_MAC_LEN;
-        let payload_per_chunk = SV2_FRAME_CHUNK_SIZE - aead_mac_len;
-        let chunks = (msg_length.0 as usize + payload_per_chunk - 1) / payload_per_chunk;
-        let expected_len = msg_length.0 as usize + chunks * aead_mac_len;
-
-        assert_eq!(
-            encrypted_len, expected_len,
-            "encrypted_len() mismatch for msg_length={}: {} chunks, expected {} bytes, got {} bytes",
-            msg_length.0, chunks, expected_len, encrypted_len
         );
     }
 

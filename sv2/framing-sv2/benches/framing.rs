@@ -3,7 +3,7 @@
 
 use binary_sv2::{B016MOwned, Serialize};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use framing_sv2::{framing::Sv2Frame, header::Header};
+use framing_sv2::framing::Sv2Frame;
 
 // Type alias for buffer backend - Vec or buffer_pool::Slice
 #[cfg(not(feature = "with_buffer_pool"))]
@@ -116,27 +116,12 @@ fn bench_size_hint(c: &mut Criterion) {
     group.finish();
 }
 
-// Benchmarks calculating encrypted payload length from header
-fn bench_encrypted_len(c: &mut Criterion) {
-    let mut group = c.benchmark_group(format!("sv2frame::encrypted_len::{BACKEND}"));
-
-    for &size in PAYLOAD_SIZES {
-        let header = Header::from_bytes(&frame_from_payload_size(size)).unwrap();
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| black_box(header.encrypted_len()))
-        });
-    }
-
-    group.finish();
-}
-
 criterion_group!(
     framing,
     bench_from_message,
     bench_serialize,
     bench_from_bytes,
-    bench_size_hint,
-    bench_encrypted_len
+    bench_size_hint
 );
 
 criterion_main!(framing);

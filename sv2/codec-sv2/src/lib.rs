@@ -44,7 +44,9 @@ use buffer_sv2::AeadBuffer;
 #[cfg(feature = "noise_sv2")]
 use framing_sv2::framing::{handshake_message_to_frame as h2f, HandShakeFrame};
 #[cfg(feature = "noise_sv2")]
-use noise_sv2::{NoiseDecryptor, NoiseEncryptor, NoiseEngine};
+use framing_sv2::{header::Header, SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
+#[cfg(feature = "noise_sv2")]
+use noise_sv2::{NoiseDecryptor, NoiseEncryptor, NoiseEngine, AEAD_MAC_LEN};
 
 mod decoder;
 mod encoder;
@@ -345,20 +347,41 @@ impl State {
     }
 }
 
+/// Size of an encrypted Sv2 frame header, including the MAC that seals it.
+#[cfg(feature = "noise_sv2")]
+pub const ENCRYPTED_SV2_FRAME_HEADER_SIZE: usize = SV2_FRAME_HEADER_SIZE + AEAD_MAC_LEN;
+
+/// Plaintext a single chunk carries: a whole chunk less the MAC that seals it.
+#[cfg(feature = "noise_sv2")]
+pub const SV2_FRAME_PLAINTEXT_CHUNK_SIZE: usize = SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN;
+
+/// Length the payload `header` declares takes once encrypted, including the MAC of every chunk.
+#[cfg(feature = "noise_sv2")]
+pub fn encrypted_payload_length(header: &Header) -> usize {
+    let len = header.payload_length();
+    let chunks = len.div_ceil(SV2_FRAME_PLAINTEXT_CHUNK_SIZE);
+    len + chunks * AEAD_MAC_LEN
+}
+
 #[cfg(test)]
 #[cfg(feature = "noise_sv2")]
 mod tests {
+    use crate::SV2_FRAME_PLAINTEXT_CHUNK_SIZE;
     use crate::{
         Error, HandshakeRole, NoiseEncoder, StandardEitherFrame, StandardNoiseDecoder,
         StandardSv2Frame, State, TransportDecryptState, TransportEncryptState,
     };
     use binary_sv2::{Deserialize, Serialize, B064K};
-    use framing_sv2::{framing::Sv2Frame, SV2_FRAME_CHUNK_SIZE};
+    use framing_sv2::{
+        framing::Sv2Frame, header::Header, SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE,
+    };
     use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
     use noise_sv2::{
         Initiator, Responder, AEAD_MAC_LEN, ELLSWIFT_ENCODING_SIZE,
         INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
     };
+    use quickcheck::Arbitrary;
+    use quickcheck_macros::quickcheck;
 
     const AUTHORITY_PUBLIC_K: &str = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
     const AUTHORITY_PRIVATE_K: &str = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n";
@@ -554,5 +577,33 @@ mod tests {
         let actual = state.step_0().unwrap_err();
         let expect = Error::NotInHandShakeState;
         assert_eq!(actual, expect);
+    }
+
+    #[derive(Debug, Clone)]
+    struct ValidU24(u32);
+
+    impl Arbitrary for ValidU24 {
+        fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+            ValidU24(u32::arbitrary(g) % 16_777_216)
+        }
+    }
+
+    /// The encrypted length grows by one MAC per chunk, not one MAC overall.
+    #[quickcheck]
+    fn prop_encrypted_payload_length_counts_one_mac_per_chunk(payload_length: ValidU24) {
+        let mut bytes = [0u8; SV2_FRAME_HEADER_SIZE];
+        bytes[2] = 0x01;
+        bytes[3..].copy_from_slice(&payload_length.0.to_le_bytes()[..3]);
+        let header = Header::from_bytes(&bytes).unwrap();
+
+        let payload_per_chunk = SV2_FRAME_PLAINTEXT_CHUNK_SIZE;
+        let chunks = (payload_length.0 as usize).div_ceil(payload_per_chunk);
+
+        assert_eq!(
+            crate::encrypted_payload_length(&header),
+            payload_length.0 as usize + chunks * AEAD_MAC_LEN,
+            "mismatch for a {}-byte payload spanning {chunks} chunks",
+            payload_length.0
+        );
     }
 }

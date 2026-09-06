@@ -37,7 +37,7 @@ use framing_sv2::{
     header::Header,
 };
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::{ENCRYPTED_SV2_FRAME_HEADER_SIZE, SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
+use framing_sv2::{SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
 #[cfg(feature = "noise_sv2")]
 use noise_sv2::NOISE_FRAME_HEADER_SIZE;
 
@@ -45,7 +45,7 @@ use crate::error::{Error, Result};
 
 use crate::Error::MissingBytes;
 #[cfg(feature = "noise_sv2")]
-use crate::{State, TransportDecryptState};
+use crate::{State, TransportDecryptState, ENCRYPTED_SV2_FRAME_HEADER_SIZE};
 
 #[cfg(not(feature = "with_buffer_pool"))]
 use buffer_sv2::{Buffer as IsBuffer, BufferFromSystemMemory as Buffer};
@@ -192,7 +192,7 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
         } else {
             let src = self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE);
             let header = Header::from_bytes(src)?;
-            let encrypted_len = header.encrypted_len();
+            let encrypted_len = crate::encrypted_payload_length(&header);
             let buffered = IsBuffer::len(&self.noise_buffer);
             if buffered > encrypted_len {
                 return Err(self.reset_after_surplus(
@@ -336,8 +336,8 @@ impl<'a, T: Serialize + GetSize + Deserialize<'a>, B: IsBuffer + AeadBuffer> Wit
                 decrypt(&mut self.sv2_buffer)?;
                 let header =
                     Header::from_bytes(self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE))?;
-                self.missing_noise_b = header.encrypted_len();
-                Err(Error::MissingBytes(header.encrypted_len()))
+                self.missing_noise_b = crate::encrypted_payload_length(&header);
+                Err(Error::MissingBytes(self.missing_noise_b))
             }
             // HERE THE SV2 PAYLOAD IS READY TO BE DECRYPTED
             _ => {

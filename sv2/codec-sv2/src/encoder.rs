@@ -32,12 +32,13 @@ use core::convert::TryInto;
 #[cfg(feature = "noise_sv2")]
 use framing_sv2::framing::{Frame, HandShakeFrame};
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::{ENCRYPTED_SV2_FRAME_HEADER_SIZE, SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
-#[cfg(feature = "noise_sv2")]
-use noise_sv2::AEAD_MAC_LEN;
+use framing_sv2::SV2_FRAME_HEADER_SIZE;
 
 #[cfg(feature = "noise_sv2")]
-use crate::{Error, Result, State, TransportEncryptState};
+use crate::{
+    Error, Result, State, TransportEncryptState, ENCRYPTED_SV2_FRAME_HEADER_SIZE,
+    SV2_FRAME_PLAINTEXT_CHUNK_SIZE,
+};
 
 #[cfg(not(feature = "with_buffer_pool"))]
 use buffer_sv2::{Buffer as IsBuffer, BufferFromSystemMemory as Buffer};
@@ -200,10 +201,10 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
 
         // ENCRYPT THE PAYLOAD IN CHUNKS
         let mut start = SV2_FRAME_HEADER_SIZE;
-        let mut end = if sv2.len() - start < (SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN) {
+        let mut end = if sv2.len() - start < SV2_FRAME_PLAINTEXT_CHUNK_SIZE {
             sv2.len()
         } else {
-            SV2_FRAME_CHUNK_SIZE + start - AEAD_MAC_LEN
+            start + SV2_FRAME_PLAINTEXT_CHUNK_SIZE
         };
         let mut encrypted_len = ENCRYPTED_SV2_FRAME_HEADER_SIZE;
 
@@ -214,7 +215,7 @@ impl<B: IsBuffer + AeadBuffer, T: Serialize + GetSize> WithNoise<B, T> {
             encrypt(&mut self.noise_buffer)?;
             encrypted_len += self.noise_buffer.as_ref().len();
             start = end;
-            end = (start + SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN).min(sv2.len());
+            end = (start + SV2_FRAME_PLAINTEXT_CHUNK_SIZE).min(sv2.len());
         }
         self.noise_buffer.danger_set_start(0);
         Ok(())
@@ -342,7 +343,9 @@ mod prop_tests {
     #[cfg(feature = "noise_sv2")]
     use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
     #[cfg(feature = "noise_sv2")]
-    use noise_sv2::{ELLSWIFT_ENCODING_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE};
+    use noise_sv2::{
+        AEAD_MAC_LEN, ELLSWIFT_ENCODING_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
+    };
     use quickcheck::{Arbitrary, Gen, TestResult};
     use quickcheck_macros::quickcheck;
     #[cfg(feature = "noise_sv2")]
