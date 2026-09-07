@@ -168,6 +168,52 @@ macro_rules! test_datatype_roundtrip {
             );
         }
     }};
+
+    // ---- generator mode: generic ----
+    // Generator produces valid wire bytes. Parse must succeed.
+    // Byte stability assertion.
+    ($datatype:ty, $data:expr, $gen:expr) => {{
+        let mut u = arbitrary::Unstructured::new(&$data);
+        if let Ok(bytes) = $gen(&mut u) {
+            let mut bytes = bytes;
+            // the `expect` here is intentional to make any discrepancy on the generators
+            // implementation be readily visible;
+            let parsed = <$datatype>::from_bytes(&mut bytes)
+                .expect("generator produced unparseable bytes");
+
+
+            let mut encoded_1 = vec![0u8; parsed.get_size()];
+            parsed
+                .clone()
+                .to_bytes(&mut encoded_1)
+                .expect("Encoding failed after a successful parse");
+
+
+            let mut encoded_1_clone = encoded_1.clone();
+            let reparsed = <$datatype>::from_bytes(&mut encoded_1_clone)
+                .expect("Roundtrip failed: serializer produced invalid bytes");
+
+
+            let mut encoded_2 = vec![0u8; reparsed.get_size()];
+            reparsed
+                .clone()
+                .to_bytes(&mut encoded_2)
+                .expect("Second encoding failed");
+
+
+            assert_eq!(encoded_1, encoded_2, "Serialization is not stable");
+            assert_eq!(
+                encoded_1.len(),
+                parsed.get_size(),
+                "Encoded length must match get_size()"
+            );
+            assert_eq!(
+                reparsed.get_size(),
+                parsed.get_size(),
+                "Roundtrip must preserve get_size()"
+            );
+        }
+    }};
 }
 
 /// WARNING: Generated with OpenAI's GPT-5.5 free model
