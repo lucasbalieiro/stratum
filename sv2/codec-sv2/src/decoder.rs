@@ -34,10 +34,7 @@ use framing_sv2::{
     SV2_FRAME_CHUNK_SIZE,
 };
 
-use crate::{
-    error::{Error, Result},
-    Buffer,
-};
+use crate::{error::Result, Buffer};
 #[cfg(feature = "noise_sv2")]
 use crate::{
     state::ExpectsHandshakeMessage, TransportDecryptState, ENCRYPTED_SV2_FRAME_HEADER_SIZE,
@@ -119,9 +116,10 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
     /// is read: the decoder buffers exactly that many bytes.
     ///
     /// On [`Decoded::Incomplete`], resize the decoder buffer using `writable`, read another chunk
-    /// from the stream, and call this method again until it returns a [`Decoded::Frame`]. The count it carries is
-    /// what the decoder will accept on the next read, which is always [`Self::writable_len`] and
-    /// never more than one chunk, not the number of bytes left in the message.
+    /// from the stream, and call this method again until it returns a [`Decoded::Frame`]. The
+    /// count it carries is what the decoder will accept on the next read, which is always
+    /// [`Self::writable_len`] and never more than one chunk, not the number of bytes left in the
+    /// message.
     ///
     /// Bytes buffered past the end of the message are kept as the start of the next one, or of
     /// the first encrypted header.
@@ -385,8 +383,7 @@ pub struct WithoutNoise<B: IsBuffer> {
 }
 
 impl<B: IsBuffer> WithoutNoise<B> {
-    /// Attempts to decode the next frame, returning either a frame or an error describing how the
-    /// buffered bytes differ from the frame size declared by the header.
+    /// Attempts to decode the next frame.
     ///
     /// [`Decoded::Incomplete`] carries the number of bytes the decoder will accept on the next
     /// read: resize the decoder buffer using `writable`, read that many bytes from the stream,
@@ -394,9 +391,7 @@ impl<B: IsBuffer> WithoutNoise<B> {
     /// [`Self::writable_len`], so it is capped at one chunk and is not the number of bytes left
     /// in the frame — a frame longer than that takes several rounds.
     ///
-    /// `Error::UnexpectedTrailingBytes` reports bytes buffered past the end of the frame. The
-    /// buffer is drained — including the complete frame that preceded the surplus — so the caller
-    /// must resynchronize the stream or reconnect.
+    /// Bytes buffered past the end of the frame are kept as the start of the next one.
     #[inline]
     pub fn next_frame(&mut self) -> Result<Decoded<SerializedSv2Frame<B::Slice>>> {
         let len = self.buffer.len();
@@ -415,9 +410,17 @@ impl<B: IsBuffer> WithoutNoise<B> {
                 Ok(Decoded::Incomplete(self.writable_len()))
             }
             Err(SizeHint::Surplus(surplus)) => {
-                self.missing_b = Header::SIZE;
-                let _ = self.buffer.get_data_owned();
-                Err(Error::UnexpectedTrailingBytes(surplus))
+                let bytes = self.buffer.get_data_owned();
+                let (frame, carried) = bytes.as_ref().split_at(len - surplus);
+                self.buffer.get_writable(frame.len()).copy_from_slice(frame);
+                let frame = self.buffer.get_data_owned();
+                self.buffer
+                    .get_writable(carried.len())
+                    .copy_from_slice(carried);
+                self.missing_b = Header::SIZE.saturating_sub(carried.len());
+                Ok(Decoded::Frame(SerializedSv2Frame::<B::Slice>::from_bytes(
+                    frame,
+                )?))
             }
         }
     }
@@ -659,38 +662,44 @@ mod prop_tests {
         TestResult::from_bool(missing_bytes_count > 0)
     }
 
-    /// Verifies that over-filling the buffer (calling `writable` twice before `next_frame`)
-    /// surfaces `UnexpectedTrailingBytes`, drains the buffer, and leaves the decoder usable.
     #[test]
-    fn test_decoder_excess_bytes_drains_and_recovers() {
-        let msg = TestMessage { value: 42 };
-        let frame = Sv2Frame::<TestMessage>::from_message(msg.clone(), 0, 0, false).unwrap();
+    fn bytes_read_past_a_plain_frame_open_the_next_one() {
+        const SURPLUS: usize = 4;
+
         let mut encoder = Encoder::new();
-        let encoded = encoder.encode(frame).unwrap();
-        let encoded: &[u8] = encoded.as_ref();
+        let mut encode = |value: u16| -> alloc::vec::Vec<u8> {
+            let frame =
+                Sv2Frame::<TestMessage>::from_message(TestMessage { value }, 0, 0, false).unwrap();
+            let encoded = encoder.encode(frame).unwrap();
+            let encoded: &[u8] = encoded.as_ref();
+            encoded.to_vec()
+        };
+        let first = encode(1);
+        let second = encode(2);
 
         let mut decoder = Decoder::new();
-        decoder.writable().copy_from_slice(&encoded[..Header::SIZE]);
+        decoder.writable().copy_from_slice(&first[..Header::SIZE]);
         assert!(matches!(decoder.next_frame(), Ok(Decoded::Incomplete(_))));
-        decoder.writable().copy_from_slice(&encoded[Header::SIZE..]);
-
-        // Write past the slice `writable` returned.
-        const SURPLUS: usize = 4;
+        decoder.writable().copy_from_slice(&first[Header::SIZE..]);
         decoder
             .buffer
             .get_writable(SURPLUS)
-            .copy_from_slice(&[0xff; SURPLUS]);
+            .copy_from_slice(&second[..SURPLUS]);
 
-        match decoder.next_frame() {
-            Err(crate::Error::UnexpectedTrailingBytes(n)) => assert_eq!(n, SURPLUS),
-            Ok(_) => panic!("expected UnexpectedTrailingBytes, got a frame"),
-            Err(e) => panic!("expected UnexpectedTrailingBytes, got {e:?}"),
-        }
+        let Ok(Decoded::Frame(mut frame)) = decoder.next_frame() else {
+            panic!("expected the first frame");
+        };
+        assert_eq!(
+            binary_sv2::from_bytes::<TestMessage>(frame.payload()).unwrap(),
+            TestMessage { value: 1 }
+        );
+        assert_eq!(decoder.writable_len(), Header::SIZE - SURPLUS);
 
-        let mut decoded =
-            decode_frame(&mut decoder, encoded, None).expect("decoder should recover");
-        let decoded_msg: TestMessage = binary_sv2::from_bytes(decoded.payload()).unwrap();
-        assert_eq!(decoded_msg, msg);
+        let mut frame = decode_frame(&mut decoder, &second[SURPLUS..], None).unwrap();
+        assert_eq!(
+            binary_sv2::from_bytes::<TestMessage>(frame.payload()).unwrap(),
+            TestMessage { value: 2 }
+        );
     }
 
     #[cfg(feature = "noise_sv2")]

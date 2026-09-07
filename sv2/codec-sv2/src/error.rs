@@ -37,11 +37,6 @@ pub enum Error {
 
     /// The bytes taken out of the decoder buffer do not hold exactly one frame.
     UnexpectedFrameSize(SizeHint),
-
-    /// The decoder buffer held a complete frame followed by the given number of surplus bytes.
-    ///
-    /// The buffered data, including that complete frame, has already been discarded.
-    UnexpectedTrailingBytes(usize),
 }
 
 impl fmt::Display for Error {
@@ -63,12 +58,6 @@ impl fmt::Display for Error {
             },
             UnexpectedFrameSize(hint) => {
                 write!(f, "Buffered bytes do not hold exactly one frame: {hint}")
-            }
-            UnexpectedTrailingBytes(u) => {
-                write!(
-                    f,
-                    "Buffer held `{u}` bytes beyond the end of the frame; buffered data discarded"
-                )
             }
         }
     }
