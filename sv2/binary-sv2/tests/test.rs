@@ -748,6 +748,25 @@ mod test_to_writer_len {
     }
 }
 
+mod test_fixed_size_hint_overflow {
+    use super::*;
+
+    struct HugeFixed;
+
+    impl Fixed for HugeFixed {
+        const SIZE: usize = usize::MAX;
+    }
+
+    #[test]
+    fn unrepresentable_fixed_end_offset_does_not_wrap() {
+        let data = [0u8; 1];
+        match <HugeFixed as SizeHint>::size_hint(&data, data.len()) {
+            Err(Error::ReadError(actual, required)) => assert!(required >= actual),
+            other => panic!("expected ReadError, got {other:?}"),
+        }
+    }
+}
+
 mod test_owned_visibility {
     macro_rules! define_plain {
         ($struct_vis:vis $name:ident, $field_vis:vis $field:ident) => {
