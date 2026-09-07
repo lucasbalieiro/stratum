@@ -31,7 +31,7 @@ cargo bench --bench pool_lifecycle
 
 ### 1. Encoder (`encoder.rs`)
 
-- **`encoder/plain`** — Single-frame encode with a plain `Encoder<T>`
+- **`encoder/plain`** — Single-frame encode with a plain `Encoder`
 - **`encoder/creation/plain`** — `Encoder::new()` overhead
 
 With `noise_sv2` feature:
@@ -42,7 +42,7 @@ With `noise_sv2` feature:
 ### 2. Decoder (`decoder.rs`)
 
 - **`decoder/plain`** — Full decode loop: fill writable buffer, call `next_frame()` until complete
-- **`decoder/creation/plain`** — `StandardDecoder::new()` overhead
+- **`decoder/creation/plain`** — `Decoder::new()` overhead
 
 ### 3. Noise Roundtrip (`noise_roundtrip.rs`)
 
@@ -57,7 +57,10 @@ Requires `noise_sv2` feature.
 
 ### 4. Serialization (`serialization.rs`)
 
-- **`serialization/frame_from_message`** — `Sv2Frame::from_message()`: stores message as `Option<T>`, no serialization yet
+- **`serialization/frame_from_message`** — `Sv2Frame::from_message()`: builds the header and
+  holds the message, no serialization yet
+- **`serialization/frame_serialization_roundtrip`** — `from_message()` followed by
+  `serialize()` into a caller-provided buffer
 
 ### 5. Buffer Pool Exhaustion (`buffer_exhaustion.rs`)
 

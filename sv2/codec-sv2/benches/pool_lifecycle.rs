@@ -1,9 +1,9 @@
 extern crate alloc;
 
 use binary_sv2;
-use codec_sv2::StandardDecoder;
+use codec_sv2::{Decoded, Decoder};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::{SerializedSv2Frame, Sv2Frame};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     collections::VecDeque,
@@ -58,7 +58,7 @@ type Slice = buffer_sv2::Slice;
 #[cfg(not(feature = "with_buffer_pool"))]
 type Slice = Vec<u8>;
 
-type DecodedFrame = Sv2Frame<ZeroCopyMsg<'static>, Slice>;
+type DecodedFrame = SerializedSv2Frame<Slice>;
 
 const COINBASE_SIZES: &[usize] = &[16, 64, 256, 1024];
 
@@ -68,21 +68,21 @@ const POOL_CAPACITY: usize = 8;
 
 fn make_encoded_frame(coinbase_size: usize) -> Vec<u8> {
     let msg = ZeroCopyMsgOwned::new_owned(1, coinbase_size);
-    let frame = Sv2Frame::<ZeroCopyMsgOwned, Vec<u8>>::from_message(msg, 0, 0, true).unwrap();
+    let frame = Sv2Frame::<ZeroCopyMsgOwned>::from_message(msg, 0, 0, true).unwrap();
     let mut buf = vec![0u8; frame.encoded_length()];
     frame.serialize(&mut buf).unwrap();
     buf
 }
 
-fn acquire_frame(dec: &mut StandardDecoder<ZeroCopyMsg<'static>>, enc_buf: &[u8]) -> DecodedFrame {
+fn acquire_frame(dec: &mut Decoder, enc_buf: &[u8]) -> DecodedFrame {
     let w = dec.writable();
     let header_len = w.len();
     w.copy_from_slice(&enc_buf[..header_len]);
     let mut offset = header_len;
     loop {
         match dec.next_frame() {
-            Ok(frame) => return frame,
-            Err(codec_sv2::Error::MissingBytes(n)) => {
+            Ok(Decoded::Frame(frame)) => return frame,
+            Ok(Decoded::Incomplete(n)) => {
                 let w = dec.writable();
                 w.copy_from_slice(&enc_buf[offset..offset + n]);
                 offset += n;
@@ -105,7 +105,7 @@ fn bench_deserialization_latency_vs_accumulated(c: &mut Criterion) {
                 let mut total = Duration::ZERO;
 
                 for _ in 0..iters {
-                    let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                    let mut dec = Decoder::new();
 
                     let held_frames: Vec<DecodedFrame> =
                         (0..n).map(|_| acquire_frame(&mut dec, &enc_buf)).collect();
@@ -136,7 +136,7 @@ fn bench_deserialization_latency_vs_accumulated(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
 
                         let held_owned: Vec<OwnedMsg> = (0..n)
                             .map(|_| {
@@ -185,7 +185,7 @@ fn bench_exhaustion_boundary(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
 
                         let pre: Vec<DecodedFrame> = (0..(idx - 1))
                             .map(|_| acquire_frame(&mut dec, &enc_buf))
@@ -215,7 +215,7 @@ fn bench_exhaustion_boundary(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
 
                         let pre: Vec<OwnedMsg> = (0..(idx - 1))
                             .map(|_| {
@@ -262,7 +262,7 @@ fn bench_throughput_n_messages(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         // Hold frames so pool pressure accumulates.
                         let mut held_frames: Vec<DecodedFrame> = Vec::with_capacity(n);
 
@@ -293,7 +293,7 @@ fn bench_throughput_n_messages(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         let mut held_owned: Vec<OwnedMsg> = Vec::with_capacity(n);
 
                         let t = Instant::now();
@@ -329,7 +329,7 @@ fn bench_copy_overhead_isolation(c: &mut Criterion) {
             let mut total = Duration::ZERO;
 
             for _ in 0..iters {
-                let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                let mut dec = Decoder::new();
 
                 let t = Instant::now();
                 let mut frame = acquire_frame(black_box(&mut dec), &enc_buf);
@@ -350,7 +350,7 @@ fn bench_copy_overhead_isolation(c: &mut Criterion) {
             let mut total = Duration::ZERO;
 
             for _ in 0..iters {
-                let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                let mut dec = Decoder::new();
 
                 let t = Instant::now();
                 let mut frame = acquire_frame(black_box(&mut dec), &enc_buf);
@@ -370,7 +370,7 @@ fn bench_copy_overhead_isolation(c: &mut Criterion) {
             let mut total = Duration::ZERO;
 
             for _ in 0..iters {
-                let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                let mut dec = Decoder::new();
                 let mut frame = acquire_frame(&mut dec, &enc_buf);
 
                 let t = Instant::now();
@@ -402,7 +402,7 @@ fn bench_copy_overhead_by_payload_size(c: &mut Criterion) {
                 b.iter_custom(|iters| {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         let t = Instant::now();
                         let mut frame = acquire_frame(black_box(&mut dec), &enc_buf);
                         let msg: ZeroCopyMsg<'_> = binary_sv2::from_bytes(frame.payload()).unwrap();
@@ -423,7 +423,7 @@ fn bench_copy_overhead_by_payload_size(c: &mut Criterion) {
                 b.iter_custom(|iters| {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         let t = Instant::now();
                         let mut frame = acquire_frame(black_box(&mut dec), &enc_buf);
                         let msg: ZeroCopyMsg<'_> = binary_sv2::from_bytes(frame.payload()).unwrap();
@@ -457,7 +457,7 @@ fn bench_sliding_window_pool_pressure(c: &mut Criterion) {
                 let mut total = Duration::ZERO;
 
                 for _ in 0..iters {
-                    let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                    let mut dec = Decoder::new();
 
                     let mut window: VecDeque<DecodedFrame> = VecDeque::with_capacity(k + 1);
                     for _ in 0..k {
@@ -492,7 +492,7 @@ fn bench_sliding_window_pool_pressure(c: &mut Criterion) {
             let mut total = Duration::ZERO;
 
             for _ in 0..iters {
-                let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                let mut dec = Decoder::new();
                 let mut held: Vec<OwnedMsg> = Vec::with_capacity(MSGS);
 
                 let mut run_total = Duration::ZERO;
@@ -537,7 +537,7 @@ fn bench_allocation_amplification(c: &mut Criterion) {
                     let mut total_bytes: u64 = 0;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         let mut held: Vec<DecodedFrame> = Vec::with_capacity(n);
 
                         reset_alloc_counters();
@@ -578,7 +578,7 @@ fn bench_allocation_amplification(c: &mut Criterion) {
                     let mut total_bytes: u64 = 0;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         let mut held: Vec<OwnedMsg> = Vec::with_capacity(n);
 
                         reset_alloc_counters();
@@ -619,7 +619,7 @@ fn bench_allocation_amplification(c: &mut Criterion) {
                     let mut total_bytes: u64 = 0;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         let mut held: Vec<DecodedFrame> = Vec::with_capacity(n);
 
                         reset_alloc_counters();
@@ -659,7 +659,7 @@ fn bench_allocation_amplification(c: &mut Criterion) {
                     let mut total_bytes: u64 = 0;
 
                     for _ in 0..iters {
-                        let mut dec = StandardDecoder::<ZeroCopyMsg<'static>>::new();
+                        let mut dec = Decoder::new();
                         let mut held: Vec<OwnedMsg> = Vec::with_capacity(n);
 
                         reset_alloc_counters();

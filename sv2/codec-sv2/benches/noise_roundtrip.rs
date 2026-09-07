@@ -4,14 +4,14 @@ extern crate alloc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 #[cfg(feature = "noise_sv2")]
-use codec_sv2::{HandshakeRole, NoiseEncoder, StandardNoiseDecoder, State};
+use codec_sv2::{
+    Decrypted, NoiseDecoder, NoiseEncoder, TransportDecryptState, TransportEncryptState,
+};
 
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::framing::{Frame, Sv2Frame};
+use framing_sv2::framing::Sv2Frame;
 
 #[cfg(feature = "noise_sv2")]
-use noise_sv2::{Initiator, Responder};
-
 #[cfg(feature = "noise_sv2")]
 mod common;
 #[cfg(feature = "noise_sv2")]
@@ -19,47 +19,29 @@ use common::TestMsg;
 
 #[cfg(feature = "noise_sv2")]
 fn setup_noise_engine_pair() -> (
-    NoiseEncoder<TestMsg>,
-    StandardNoiseDecoder<TestMsg>,
-    State,
-    State,
+    NoiseEncoder,
+    NoiseDecoder,
+    TransportEncryptState,
+    TransportDecryptState,
 ) {
-    use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
+    let (sender, receiver) = common::make_handshake_pair();
 
-    const AUTHORITY_PUBLIC_K: &str = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
-    const AUTHORITY_PRIVATE_K: &str = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n";
-    const CERT_VALIDITY: core::time::Duration = core::time::Duration::from_secs(3600);
-
-    let authority_public_k: Secp256k1PublicKey = AUTHORITY_PUBLIC_K.to_string().try_into().unwrap();
-
-    let authority_private_k: Secp256k1SecretKey =
-        AUTHORITY_PRIVATE_K.to_string().try_into().unwrap();
-
-    let initiator = Initiator::from_raw_k(authority_public_k.into_bytes()).unwrap();
-    let responder = Responder::from_authority_kp(
-        &authority_public_k.into_bytes(),
-        &authority_private_k.into_bytes(),
-        CERT_VALIDITY,
-    )
-    .unwrap();
-
-    let mut sender_state = State::initialized(HandshakeRole::Initiator(initiator));
-    let mut receiver_state = State::initialized(HandshakeRole::Responder(responder));
-
-    let first_message = sender_state.step_0().unwrap();
+    let (first_message, sender) = sender.step_0().unwrap();
     let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] =
         first_message.payload().try_into().unwrap();
 
-    let (second_message, receiver_state) = receiver_state.step_1(first_message_bytes).unwrap();
+    let (second_message, receiver_transport) = receiver.step_1(first_message_bytes).unwrap();
     let second_message_bytes: [u8; noise_sv2::INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE] =
         second_message.payload().try_into().unwrap();
 
-    let sender_state = sender_state.step_2(second_message_bytes).unwrap();
+    let sender_transport = sender.step_2(second_message_bytes).unwrap();
 
-    let enc = NoiseEncoder::<TestMsg>::new();
-    let dec = StandardNoiseDecoder::<TestMsg>::new();
+    let enc = NoiseEncoder::new();
+    let dec = NoiseDecoder::new();
 
-    (enc, dec, sender_state, receiver_state)
+    let (sender_encrypt, _) = sender_transport.split();
+    let (_, receiver_decrypt) = receiver_transport.split();
+    (enc, dec, sender_encrypt, receiver_decrypt)
 }
 
 #[cfg(feature = "noise_sv2")]
@@ -72,24 +54,27 @@ fn bench_noise_roundtrip(c: &mut Criterion) {
             let (mut enc, _, mut enc_state, mut dec_state) = setup_noise_engine_pair();
 
             // Encode
-            let sv2_frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
-            let frame = Frame::Sv2(sv2_frame);
-            let encrypted = enc.encode(black_box(frame), &mut enc_state).unwrap();
+            let frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
+            let encrypted = enc
+                .encode_transport(black_box(frame), &mut enc_state)
+                .unwrap();
 
             // Decode
-            let mut dec = StandardNoiseDecoder::<TestMsg>::new();
+            let mut dec = NoiseDecoder::new();
             let w = dec.writable();
             let len = w.len();
             w[..len].copy_from_slice(&encrypted[0..len]);
             let mut offset = len;
 
             loop {
-                match dec.next_frame(&mut dec_state) {
-                    Ok(decoded) => {
+                match dec.next_transport_frame(dec_state) {
+                    Ok(Decrypted::Frame(decoded, state)) => {
                         black_box(decoded);
+                        dec_state = state;
                         break;
                     }
-                    Err(codec_sv2::Error::MissingBytes(n)) => {
+                    Ok(Decrypted::Incomplete(n, state)) => {
+                        dec_state = state;
                         let w = dec.writable();
                         w[..n].copy_from_slice(&encrypted[offset..offset + n]);
                         offset += n;
@@ -109,9 +94,10 @@ fn bench_noise_encode_only(c: &mut Criterion) {
         let msg = TestMsg { data: 42u8 };
 
         b.iter(|| {
-            let sv2_frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
-            let frame = Frame::Sv2(sv2_frame);
-            let encrypted = enc.encode(black_box(frame), &mut enc_state).unwrap();
+            let frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
+            let encrypted = enc
+                .encode_transport(black_box(frame), &mut enc_state)
+                .unwrap();
             black_box(encrypted);
         })
     });
@@ -138,49 +124,22 @@ fn bench_encrypted_payload_length(c: &mut Criterion) {
 
 #[cfg(feature = "noise_sv2")]
 fn bench_noise_handshake_steps(c: &mut Criterion) {
-    use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
-
-    const AUTHORITY_PUBLIC_K: &str = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72";
-    const AUTHORITY_PRIVATE_K: &str = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n";
-    const CERT_VALIDITY: core::time::Duration = core::time::Duration::from_secs(3600);
-
     c.bench_function("noise/handshake/step_0", |b| {
         b.iter(|| {
-            let authority_public_k: Secp256k1PublicKey =
-                AUTHORITY_PUBLIC_K.to_string().try_into().unwrap();
-
-            let initiator = Initiator::from_raw_k(authority_public_k.into_bytes()).unwrap();
-            let mut sender_state = State::initialized(HandshakeRole::Initiator(initiator));
-
-            let first_message = sender_state.step_0().unwrap();
-            black_box(first_message);
+            let (sender, _) = common::make_handshake_pair();
+            black_box(sender.step_0().unwrap());
         })
     });
 
     c.bench_function("noise/handshake/step_1", |b| {
-        let authority_public_k: Secp256k1PublicKey =
-            AUTHORITY_PUBLIC_K.to_string().try_into().unwrap();
-
-        let authority_private_k: Secp256k1SecretKey =
-            AUTHORITY_PRIVATE_K.to_string().try_into().unwrap();
-
-        let initiator = Initiator::from_raw_k(authority_public_k.into_bytes()).unwrap();
-        let mut sender_state = State::initialized(HandshakeRole::Initiator(initiator));
-
-        let first_message = sender_state.step_0().unwrap();
+        let (sender, _) = common::make_handshake_pair();
+        let (first_message, _sender) = sender.step_0().unwrap();
         let first_message_bytes: [u8; noise_sv2::ELLSWIFT_ENCODING_SIZE] =
             first_message.payload().try_into().unwrap();
 
         b.iter(|| {
-            let responder = Responder::from_authority_kp(
-                &authority_public_k.into_bytes(),
-                &authority_private_k.into_bytes(),
-                CERT_VALIDITY,
-            )
-            .unwrap();
-
-            let mut receiver_state = State::initialized(HandshakeRole::Responder(responder));
-            let (second_message, _) = receiver_state.step_1(first_message_bytes).unwrap();
+            let (_, receiver) = common::make_handshake_pair();
+            let (second_message, _) = receiver.step_1(first_message_bytes).unwrap();
             black_box(second_message);
         })
     });
