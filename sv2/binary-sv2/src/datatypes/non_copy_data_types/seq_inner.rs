@@ -38,7 +38,7 @@
 use super::inner::{Inner, InnerOwned};
 use crate::{
     codec::{
-        decodable::{Decodable, DecodableField, FieldMarker, GetMarker, PrimitiveMarker},
+        decodable::{Decodable, DecodableField, FieldMarker, GetMarker},
         encodable::{EncodableField, EncodablePrimitive},
         Fixed, GetSize,
     },
@@ -350,45 +350,24 @@ macro_rules! impl_codec_for_sequence {
         impl<'a, T: 'a + Sv2DataType<'a> + GetMarker + GetSize + Decodable<'a>> Decodable<'a>
             for $a
         {
-            fn get_structure(
-                data: &[u8],
-            ) -> Result<Vec<crate::codec::decodable::FieldMarker>, Error> {
+            fn get_structure(data: &[u8]) -> Result<Vec<FieldMarker>, Error> {
                 let len = Self::expected_len(data)?;
-                let available = data.len().saturating_sub(Self::HEADERSIZE);
-                if len > available {
-                    return Err(Error::ReadError(data.len(), len + Self::HEADERSIZE));
+                let mut size = Self::HEADERSIZE;
+                for _ in 0..len {
+                    size = size.saturating_add(T::size_hint(data, size)?);
+                    if size > data.len() {
+                        return Err(Error::ReadError(data.len(), size));
+                    }
                 }
-                let mut inner = Vec::with_capacity(len + Self::HEADERSIZE);
-                for _ in 0..Self::HEADERSIZE {
-                    inner.push(FieldMarker::Primitive(PrimitiveMarker::U8));
-                }
-                let inner_type = T::get_marker();
-                inner.resize(len + Self::HEADERSIZE, inner_type);
-                Ok(inner)
+                Ok(vec![FieldMarker::Raw(size)])
             }
 
-            fn from_decoded_fields(
-                data: Vec<crate::codec::decodable::DecodableField<'a>>,
-            ) -> Result<Self, Error> {
-                let mut inner: Vec<T> = Vec::with_capacity(data.len());
-                let mut i = 0;
-                for element in data {
-                    if i >= Self::HEADERSIZE {
-                        match element {
-                            DecodableField::Primitive(p) => {
-                                let element =
-                                    T::from_decoded_fields(vec![DecodableField::Primitive(p)]);
-                                inner.push(element?)
-                            }
-                            DecodableField::Struct(fields) => {
-                                let element = T::from_decoded_fields(fields);
-                                inner.push(element?)
-                            }
-                        }
-                    }
-                    i += 1;
+            fn from_decoded_fields(data: Vec<DecodableField<'a>>) -> Result<Self, Error> {
+                let mut data = data.into_iter();
+                match (data.next(), data.next()) {
+                    (Some(DecodableField::Raw(bytes)), None) => Self::from_bytes(bytes),
+                    _ => Err(Error::DecodableConversionError),
                 }
-                Ok(Self(inner, PhantomData))
             }
 
             fn from_bytes(data: &'a mut [u8]) -> Result<Self, Error> {
@@ -419,35 +398,22 @@ macro_rules! impl_decodable_for_owned_sequence {
         {
             fn get_structure(data: &[u8]) -> Result<Vec<FieldMarker>, Error> {
                 let len = Self::expected_len(data)?;
-                let available = data.len().saturating_sub(Self::HEADERSIZE);
-                if len > available {
-                    return Err(Error::ReadError(data.len(), len + Self::HEADERSIZE));
+                let mut size = Self::HEADERSIZE;
+                for _ in 0..len {
+                    size = size.saturating_add(T::size_hint(data, size)?);
+                    if size > data.len() {
+                        return Err(Error::ReadError(data.len(), size));
+                    }
                 }
-                let mut inner = Vec::with_capacity(len + Self::HEADERSIZE);
-                for _ in 0..Self::HEADERSIZE {
-                    inner.push(FieldMarker::Primitive(PrimitiveMarker::U8));
-                }
-                let inner_type = T::get_marker();
-                inner.resize(len + Self::HEADERSIZE, inner_type);
-                Ok(inner)
+                Ok(vec![FieldMarker::Raw(size)])
             }
 
             fn from_decoded_fields(data: Vec<DecodableField<'a>>) -> Result<Self, Error> {
-                let mut inner: Vec<T> = Vec::with_capacity(data.len());
-                let mut i = 0;
-                for element in data {
-                    if i >= Self::HEADERSIZE {
-                        match element {
-                            DecodableField::Primitive(p) => inner
-                                .push(T::from_decoded_fields(vec![DecodableField::Primitive(p)])?),
-                            DecodableField::Struct(fields) => {
-                                inner.push(T::from_decoded_fields(fields)?)
-                            }
-                        }
-                    }
-                    i += 1;
+                let mut data = data.into_iter();
+                match (data.next(), data.next()) {
+                    (Some(DecodableField::Raw(bytes)), None) => Self::from_bytes(bytes),
+                    _ => Err(Error::DecodableConversionError),
                 }
-                Ok(Self(inner))
             }
 
             fn from_bytes(data: &'a mut [u8]) -> Result<Self, Error> {
