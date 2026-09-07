@@ -310,4 +310,21 @@ mod tests {
         assert!(rendered.contains("[redacted]"));
         assert!(rendered.contains("65536"));
     }
+
+    #[test]
+    fn binary_error_debug_does_not_dump_embedded_payload() {
+        let sample = vec![0xAB_u8; super::ERROR_SAMPLE_LEN];
+        let err = Error::ValueExceedsMaxSize(false, 1, 1, 32, sample, super::ERROR_SAMPLE_LEN + 1);
+
+        let rendered = alloc::format!("{err:?}");
+
+        assert!(
+            !rendered.contains("171"),
+            "Debug leaked sample bytes: {rendered}"
+        );
+        assert_eq!(
+            rendered,
+            "ValueExceedsMaxSize(false, 1, 1, 32, [redacted], 33)"
+        );
+    }
 }
