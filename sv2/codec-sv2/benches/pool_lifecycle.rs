@@ -82,8 +82,9 @@ fn acquire_frame(dec: &mut Decoder, enc_buf: &[u8]) -> DecodedFrame {
     loop {
         match dec.next_frame() {
             Ok(Decoded::Frame(frame)) => return frame,
-            Ok(Decoded::Incomplete(n)) => {
+            Ok(Decoded::Incomplete(_)) => {
                 let w = dec.writable();
+                let n = w.len();
                 w.copy_from_slice(&enc_buf[offset..offset + n]);
                 offset += n;
             }

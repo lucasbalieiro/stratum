@@ -304,8 +304,9 @@ fn bench_decoder_pool_back_vs_alloc(c: &mut Criterion) {
                             black_box(f);
                             break;
                         }
-                        Ok(Decoded::Incomplete(n)) => {
+                        Ok(Decoded::Incomplete(_)) => {
                             let w = dec.writable();
+                            let n = w.len();
                             w.copy_from_slice(&enc_buf[offset..offset + n]);
                             offset += n;
                         }
@@ -335,8 +336,9 @@ fn bench_decoder_pool_back_vs_alloc(c: &mut Criterion) {
                                 held.push(f);
                                 break;
                             }
-                            Ok(Decoded::Incomplete(n)) => {
+                            Ok(Decoded::Incomplete(_)) => {
                                 let w = dec.writable();
+                                let n = w.len();
                                 w.copy_from_slice(&enc_buf[offset..offset + n]);
                                 offset += n;
                             }
@@ -357,8 +359,9 @@ fn bench_decoder_pool_back_vs_alloc(c: &mut Criterion) {
                             held.push(f);
                             break;
                         }
-                        Ok(Decoded::Incomplete(n)) => {
+                        Ok(Decoded::Incomplete(_)) => {
                             let w = dec.writable();
+                            let n = w.len();
                             w.copy_from_slice(&enc_buf[offset..offset + n]);
                             offset += n;
                         }
@@ -404,8 +407,9 @@ fn bench_decoder_per_slot_latency(c: &mut Criterion) {
                                         pre.push(f);
                                         break;
                                     }
-                                    Ok(Decoded::Incomplete(n)) => {
+                                    Ok(Decoded::Incomplete(_)) => {
                                         let w = dec.writable();
+                                        let n = w.len();
                                         w.copy_from_slice(&enc_buf[offset..offset + n]);
                                         offset += n;
                                     }
@@ -426,8 +430,9 @@ fn bench_decoder_per_slot_latency(c: &mut Criterion) {
                                     pre.push(f);
                                     break;
                                 }
-                                Ok(Decoded::Incomplete(n)) => {
+                                Ok(Decoded::Incomplete(_)) => {
                                     let w = dec.writable();
+                                    let n = w.len();
                                     w.copy_from_slice(&enc_buf[offset..offset + n]);
                                     offset += n;
                                 }
@@ -465,8 +470,9 @@ fn bench_decoder_zc_pool_back_vs_alloc(c: &mut Criterion) {
                             black_box(f);
                             break;
                         }
-                        Ok(Decoded::Incomplete(n)) => {
+                        Ok(Decoded::Incomplete(_)) => {
                             let w = dec.writable();
+                            let n = w.len();
                             w.copy_from_slice(&enc_buf[offset..offset + n]);
                             offset += n;
                         }
@@ -496,8 +502,9 @@ fn bench_decoder_zc_pool_back_vs_alloc(c: &mut Criterion) {
                                 held.push(f);
                                 break;
                             }
-                            Ok(Decoded::Incomplete(n)) => {
+                            Ok(Decoded::Incomplete(_)) => {
                                 let w = dec.writable();
+                                let n = w.len();
                                 w.copy_from_slice(&enc_buf[offset..offset + n]);
                                 offset += n;
                             }
@@ -518,8 +525,9 @@ fn bench_decoder_zc_pool_back_vs_alloc(c: &mut Criterion) {
                             held.push(f);
                             break;
                         }
-                        Ok(Decoded::Incomplete(n)) => {
+                        Ok(Decoded::Incomplete(_)) => {
                             let w = dec.writable();
+                            let n = w.len();
                             w.copy_from_slice(&enc_buf[offset..offset + n]);
                             offset += n;
                         }
@@ -561,8 +569,9 @@ fn bench_decoder_zc_per_slot_latency(c: &mut Criterion) {
                                         pre.push(f);
                                         break;
                                     }
-                                    Ok(Decoded::Incomplete(n)) => {
+                                    Ok(Decoded::Incomplete(_)) => {
                                         let w = dec.writable();
+                                        let n = w.len();
                                         w.copy_from_slice(&enc_buf[offset..offset + n]);
                                         offset += n;
                                     }
@@ -583,8 +592,9 @@ fn bench_decoder_zc_per_slot_latency(c: &mut Criterion) {
                                     pre.push(f);
                                     break;
                                 }
-                                Ok(Decoded::Incomplete(n)) => {
+                                Ok(Decoded::Incomplete(_)) => {
                                     let w = dec.writable();
+                                    let n = w.len();
                                     w.copy_from_slice(&enc_buf[offset..offset + n]);
                                     offset += n;
                                 }

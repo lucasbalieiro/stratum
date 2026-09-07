@@ -27,12 +27,11 @@
 use buffer_sv2::AeadBuffer;
 use buffer_sv2::Buffer as IsBuffer;
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::SV2_FRAME_CHUNK_SIZE;
-#[cfg(feature = "noise_sv2")]
 use framing_sv2::{framing::HandshakeFrame, SV2_FRAME_HEADER_SIZE};
 use framing_sv2::{
     framing::{SerializedSv2Frame, SizeHint},
     header::Header,
+    SV2_FRAME_CHUNK_SIZE,
 };
 
 use crate::{
@@ -90,7 +89,8 @@ pub enum Decoded<F> {
     Frame(F),
     /// The frame is not fully buffered yet.
     ///
-    /// Carries the number of bytes still missing before the frame can be decoded.
+    /// Carries the number of bytes the decoder will accept on the next read, which is always
+    /// `writable_len` and never more than one chunk, not the number of bytes left in the frame.
     Incomplete(usize),
 }
 
@@ -105,8 +105,9 @@ pub enum Decrypted<F> {
     Frame(F, TransportDecryptState),
     /// The frame is not fully buffered yet.
     ///
-    /// Carries the number of bytes still missing before the frame can be decrypted, along with
-    /// the state to call again with.
+    /// Carries the number of bytes the decoder will accept on the next read, which is always
+    /// [`WithNoise::writable_len`] and never more than one chunk, not the number of bytes left in
+    /// the frame, along with the state to call again with.
     Incomplete(usize, TransportDecryptState),
 }
 
@@ -118,7 +119,9 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
     /// is read: the decoder buffers exactly that many bytes.
     ///
     /// On [`Decoded::Incomplete`], resize the decoder buffer using `writable`, read another chunk
-    /// from the stream, and call this method again until it returns a [`Decoded::Frame`].
+    /// from the stream, and call this method again until it returns a [`Decoded::Frame`]. The count it carries is
+    /// what the decoder will accept on the next read, which is always [`Self::writable_len`] and
+    /// never more than one chunk, not the number of bytes left in the message.
     ///
     /// `Error::UnexpectedTrailingBytes` reports bytes buffered past the end of the handshake
     /// message. The buffers are drained, so the caller must start the handshake again.
@@ -153,17 +156,19 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
             0 => Ok(None),
             missing => {
                 self.missing_noise_b = missing;
-                Ok(Some(missing))
+                Ok(Some(self.writable_len()))
             }
         }
     }
 
     /// Attempts to decode the next encrypted frame with the decrypting half of a completed
-    /// handshake, erroring out on a badly formatted header or a decryption failure.
+    /// handshake.
     ///
     /// On [`Decrypted::Incomplete`], resize the decoder buffer using `writable`, read another
     /// chunk from the stream, and call this method again with the state it carries until it
-    /// returns a [`Decrypted::Frame`].
+    /// returns a [`Decrypted::Frame`]. The count it carries is what the decoder will accept on
+    /// the next read, which is always [`Self::writable_len`] and never more than one chunk, not
+    /// the number of bytes left in the frame.
     ///
     /// `Error::UnexpectedTrailingBytes` reports bytes buffered past the end of the frame. The
     /// buffers are drained, but the AEAD nonce may already have advanced for the dropped frame,
@@ -210,12 +215,16 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
 
     /// Returns the number of bytes to read next for the current Noise-encrypted frame.
     ///
-    /// This is how many bytes are still missing from the frame, and so the exact size of the
-    /// writable buffer that should be passed to the underlying stream during reading.
+    /// This is how many bytes are still missing from the frame, capped at one chunk
+    /// ([`framing_sv2::SV2_FRAME_CHUNK_SIZE`]), which is the unit the payload is encrypted in. A
+    /// peer declares the payload length in a header it sends before any of that payload, so
+    /// buffering the whole declared length up front would let it reserve megabytes with a
+    /// 22-byte write; the frame is instead read a chunk at a time, and the buffer grows with the
+    /// data that actually arrives.
     ///
     /// The returned length dynamically updates as data is received and processed.
     pub fn writable_len(&self) -> usize {
-        self.missing_noise_b
+        self.missing_noise_b.min(SV2_FRAME_CHUNK_SIZE)
     }
 
     /// Provides a writable buffer for receiving incoming Noise-encrypted Sv2 data.
@@ -291,7 +300,7 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
                 let header =
                     Header::from_bytes(self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE))?;
                 self.missing_noise_b = crate::encrypted_payload_length(&header);
-                Ok(Decoded::Incomplete(self.missing_noise_b))
+                Ok(Decoded::Incomplete(self.writable_len()))
             }
             // HERE THE SV2 PAYLOAD IS READY TO BE DECRYPTED
             _ => {
@@ -367,10 +376,11 @@ impl<B: IsBuffer> WithoutNoise<B> {
     /// Attempts to decode the next frame, returning either a frame or an error describing how the
     /// buffered bytes differ from the frame size declared by the header.
     ///
-    /// [`Decoded::Incomplete`] carries the number of bytes still required (until a full header has
-    /// been buffered, only the bytes needed to complete the header): resize the decoder buffer
-    /// using `writable`, read another chunk from the stream, and call `next_frame` again until it
-    /// returns a [`Decoded::Frame`].
+    /// [`Decoded::Incomplete`] carries the number of bytes the decoder will accept on the next
+    /// read: resize the decoder buffer using `writable`, read that many bytes from the stream,
+    /// and call `next_frame` again until it returns a [`Decoded::Frame`]. The count always equals
+    /// [`Self::writable_len`], so it is capped at one chunk and is not the number of bytes left
+    /// in the frame — a frame longer than that takes several rounds.
     ///
     /// `Error::UnexpectedTrailingBytes` reports bytes buffered past the end of the frame. The
     /// buffer is drained — including the complete frame that preceded the surplus — so the caller
@@ -390,7 +400,7 @@ impl<B: IsBuffer> WithoutNoise<B> {
             }
             Err(SizeHint::Missing(missing)) => {
                 self.missing_b = missing;
-                Ok(Decoded::Incomplete(self.missing_b))
+                Ok(Decoded::Incomplete(self.writable_len()))
             }
             Err(SizeHint::Surplus(surplus)) => {
                 self.missing_b = Header::SIZE;
@@ -400,14 +410,26 @@ impl<B: IsBuffer> WithoutNoise<B> {
         }
     }
 
+    /// Returns the number of bytes to read next for the current frame.
+    ///
+    /// This is how many bytes are still missing from the frame, capped at
+    /// [`framing_sv2::SV2_FRAME_CHUNK_SIZE`]. A peer declares the payload length in the header it
+    /// sends before any of that payload, so buffering the whole declared length up front would
+    /// let it reserve close to 16 MiB with a six-byte write; the frame is instead read a chunk at
+    /// a time, and the buffer grows with the data that actually arrives.
+    pub fn writable_len(&self) -> usize {
+        self.missing_b.min(SV2_FRAME_CHUNK_SIZE)
+    }
+
     /// Provides a writable buffer for receiving incoming Sv2 data.
     ///
-    /// This buffer is used to store incoming data, and its size is adjusted based on the number of
-    /// missing bytes. As new data is read, it is written into this buffer until enough data has
-    /// been received to fully decode a frame. The buffer must have the correct number of bytes
-    /// available to progress to the decoding process.
+    /// This buffer is used to store incoming data, and its size is [`Self::writable_len`]. As new
+    /// data is read, it is written into this buffer until enough data has been received to fully
+    /// decode a frame. The buffer must have the correct number of bytes available to progress to
+    /// the decoding process.
     pub fn writable(&mut self) -> &mut [u8] {
-        self.buffer.get_writable(self.missing_b)
+        let writable_len = self.writable_len();
+        self.buffer.get_writable(writable_len)
     }
 }
 
@@ -477,11 +499,10 @@ mod prop_tests {
     use crate::{Decrypted, NoiseDecoder, NoiseEncoder};
     use binary_sv2::{Deserialize, Serialize};
     use buffer_sv2::Buffer as IsBuffer;
-    #[cfg(feature = "noise_sv2")]
-    use framing_sv2::SV2_FRAME_CHUNK_SIZE;
     use framing_sv2::{
         framing::{SerializedSv2Frame, Sv2Frame},
         header::Header,
+        SV2_FRAME_CHUNK_SIZE,
     };
     #[cfg(feature = "noise_sv2")]
     use noise_sv2::Responder;
@@ -869,6 +890,160 @@ mod prop_tests {
         };
         decoder.writable().fill(0);
         let _ = decoder.next_transport_frame(receiver);
+    }
+
+    /// A peer declares the payload length in the header it sends first, so the decoder must not
+    /// size its read window from that declaration: six bytes would otherwise reserve 16 MiB.
+    #[test]
+    fn a_declared_frame_length_does_not_widen_the_read_window() {
+        let mut decoder = Decoder::new();
+        decoder
+            .writable()
+            .copy_from_slice(&[0, 0, 0, 0xff, 0xff, 0xff]);
+
+        assert!(matches!(
+            decoder.next_frame(),
+            Ok(Decoded::Incomplete(SV2_FRAME_CHUNK_SIZE))
+        ));
+        assert_eq!(decoder.writable_len(), SV2_FRAME_CHUNK_SIZE);
+        assert_eq!(decoder.writable().len(), SV2_FRAME_CHUNK_SIZE);
+    }
+
+    /// A caller that sizes its read from `Incomplete` and one that sizes it from `writable`
+    /// must agree, on every round of a frame that takes more than one.
+    #[test]
+    fn incomplete_always_reports_the_next_read_window() {
+        const PAYLOAD: usize = 2 * SV2_FRAME_CHUNK_SIZE + 7;
+
+        let mut encoded = vec![0u8; Header::SIZE + PAYLOAD];
+        encoded[2] = 1;
+        encoded[3..Header::SIZE].copy_from_slice(&(PAYLOAD as u32).to_le_bytes()[..3]);
+
+        let mut decoder = Decoder::new();
+        let mut offset = 0;
+        loop {
+            let missing = match decoder.next_frame() {
+                Ok(Decoded::Frame(_)) => break,
+                Ok(Decoded::Incomplete(n)) => n,
+                Err(e) => panic!("failed to decode a multi-chunk frame: {e:?}"),
+            };
+            let writable = decoder.writable();
+            assert_eq!(missing, writable.len());
+            writable[..missing].copy_from_slice(&encoded[offset..offset + missing]);
+            offset += missing;
+        }
+        assert_eq!(offset, encoded.len());
+    }
+
+    /// The counterpart of the above: a frame longer than the read window is still decoded, over
+    /// as many reads as it takes.
+    #[test]
+    fn a_frame_longer_than_the_read_window_is_read_over_several_rounds() {
+        const PAYLOAD: usize = 3 * SV2_FRAME_CHUNK_SIZE + 7;
+
+        let mut encoded = vec![0u8; Header::SIZE + PAYLOAD];
+        encoded[2] = 1;
+        encoded[3..Header::SIZE].copy_from_slice(&(PAYLOAD as u32).to_le_bytes()[..3]);
+        for (i, byte) in encoded[Header::SIZE..].iter_mut().enumerate() {
+            *byte = i as u8;
+        }
+
+        let mut decoder = Decoder::new();
+        let mut offset = 0;
+        let mut rounds = 0;
+        let frame = loop {
+            let writable = decoder.writable();
+            let n = writable.len().min(encoded.len() - offset);
+            writable[..n].copy_from_slice(&encoded[offset..offset + n]);
+            offset += n;
+            rounds += 1;
+
+            match decoder.next_frame() {
+                Ok(Decoded::Frame(frame)) => break frame,
+                Ok(Decoded::Incomplete(_)) => continue,
+                Err(e) => panic!("failed to decode a multi-chunk frame: {e:?}"),
+            }
+        };
+
+        assert!(rounds > 2, "the frame should not fit in a single read");
+        assert_eq!(frame.header().payload_length(), PAYLOAD);
+        assert_eq!(frame.as_bytes(), &encoded[..]);
+    }
+
+    /// The Noise decoder learns the payload length from a header it has authenticated, but the
+    /// peer still has not sent any of that payload, so the same cap applies.
+    #[cfg(feature = "noise_sv2")]
+    #[test]
+    fn a_declared_noise_payload_length_does_not_widen_the_read_window() {
+        use crate::ENCRYPTED_SV2_FRAME_HEADER_SIZE;
+        use framing_sv2::SV2_FRAME_HEADER_SIZE;
+
+        let (mut sender, receiver) = make_transport_state_pair();
+
+        let mut header = Buffer::new(crate::DEFAULT_POOL_BUFFER_SIZE);
+        header
+            .get_writable(SV2_FRAME_HEADER_SIZE)
+            .copy_from_slice(&[0, 0, 0, 0xff, 0xff, 0xff]);
+        sender.encrypt(&mut header).unwrap();
+        let header = header.get_data_owned();
+
+        let mut decoder = NoiseDecoder::new();
+        let Ok(Decrypted::Incomplete(ENCRYPTED_SV2_FRAME_HEADER_SIZE, receiver)) =
+            decoder.next_transport_frame(receiver)
+        else {
+            panic!("expected the decoder to want a header");
+        };
+        decoder.writable().copy_from_slice(header.as_ref());
+
+        assert!(matches!(
+            decoder.next_transport_frame(receiver),
+            Ok(Decrypted::Incomplete(..))
+        ));
+        assert_eq!(decoder.writable_len(), SV2_FRAME_CHUNK_SIZE);
+        assert_eq!(decoder.writable().len(), SV2_FRAME_CHUNK_SIZE);
+    }
+
+    /// A Noise frame whose payload spans several chunks survives the round trip, and every round
+    /// of it agrees on how many bytes the decoder wants next.
+    #[cfg(feature = "noise_sv2")]
+    #[test]
+    fn a_noise_frame_longer_than_the_read_window_is_read_over_several_rounds() {
+        const PAYLOAD: usize = 2 * SV2_FRAME_CHUNK_SIZE + 7;
+
+        let mut plain = vec![0u8; Header::SIZE + PAYLOAD];
+        plain[2] = 1;
+        plain[3..Header::SIZE].copy_from_slice(&(PAYLOAD as u32).to_le_bytes()[..3]);
+        for (i, byte) in plain[Header::SIZE..].iter_mut().enumerate() {
+            *byte = i as u8;
+        }
+
+        let (mut sender, mut receiver) = make_transport_state_pair();
+        let mut encoder = NoiseEncoder::new();
+        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(plain.clone()).unwrap();
+        let encrypted = encoder.encode_transport(frame, &mut sender).unwrap();
+        let encrypted: &[u8] = encrypted.as_ref();
+
+        let mut decoder = NoiseDecoder::new();
+        let mut offset = 0;
+        let mut rounds = 0;
+        let decoded = loop {
+            match decoder.next_transport_frame(receiver) {
+                Ok(Decrypted::Frame(frame, _)) => break frame,
+                Ok(Decrypted::Incomplete(n, state)) => {
+                    receiver = state;
+                    let writable = decoder.writable();
+                    assert_eq!(n, writable.len());
+                    writable.copy_from_slice(&encrypted[offset..offset + n]);
+                    offset += n;
+                    rounds += 1;
+                }
+                Err(e) => panic!("failed to decode a multi-chunk noise frame: {e:?}"),
+            }
+        };
+
+        assert!(rounds > 2, "the frame should not fit in a single read");
+        assert_eq!(offset, encrypted.len());
+        assert_eq!(decoded.as_bytes(), &plain[..]);
     }
 
     /// Verifies that a single decoder instance correctly decodes two consecutive independent

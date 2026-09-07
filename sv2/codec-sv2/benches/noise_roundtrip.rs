@@ -73,10 +73,11 @@ fn bench_noise_roundtrip(c: &mut Criterion) {
                         dec_state = state;
                         break;
                     }
-                    Ok(Decrypted::Incomplete(n, state)) => {
+                    Ok(Decrypted::Incomplete(_, state)) => {
                         dec_state = state;
                         let w = dec.writable();
-                        w[..n].copy_from_slice(&encrypted[offset..offset + n]);
+                        let n = w.len();
+                        w.copy_from_slice(&encrypted[offset..offset + n]);
                         offset += n;
                     }
                     Err(e) => panic!("Decode error: {:?}", e),

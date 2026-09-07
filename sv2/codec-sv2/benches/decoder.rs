@@ -29,8 +29,9 @@ fn bench_plain_decoder(c: &mut Criterion) {
                         black_box(frame);
                         break;
                     }
-                    Ok(Decoded::Incomplete(n)) => {
+                    Ok(Decoded::Incomplete(_)) => {
                         let w = dec.writable();
+                        let n = w.len();
                         w.copy_from_slice(&enc_buf[offset..offset + n]);
                         offset += n;
                     }
