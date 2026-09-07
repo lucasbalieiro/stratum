@@ -172,3 +172,47 @@ pub fn gen_sv2_option(
     }
 }
 
+// ============================================================================
+// Common Messages
+// ============================================================================
+
+pub fn gen_setup_connection(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(128);
+    buf.extend_from_slice(&gen_u8(u)?); // protocol (arbitrary; spec_assertions checks range)
+    buf.extend_from_slice(&gen_u16(u)?); // min_version
+    buf.extend_from_slice(&gen_u16(u)?); // max_version
+    buf.extend_from_slice(&gen_u32(u)?); // flags
+    buf.extend_from_slice(&gen_str0255(u)?); // endpoint_host
+    buf.extend_from_slice(&gen_u16(u)?); // endpoint_port
+    buf.extend_from_slice(&gen_str0255(u)?); // vendor
+    buf.extend_from_slice(&gen_str0255(u)?); // hardware_version
+    buf.extend_from_slice(&gen_str0255(u)?); // firmware
+    buf.extend_from_slice(&gen_str0255(u)?); // device_id
+    Ok(buf)
+}
+
+pub fn gen_setup_connection_error(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(&gen_u32(u)?); // flags
+    buf.extend_from_slice(&gen_str0255(u)?); // error_code
+    Ok(buf)
+}
+
+pub fn gen_setup_connection_success(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(6);
+    buf.extend_from_slice(&gen_u16(u)?); // used_version
+    buf.extend_from_slice(&gen_u32(u)?); // flags
+    Ok(buf)
+}
+
+pub fn gen_reconnect(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(&gen_str0255(u)?); // new_host
+    buf.extend_from_slice(&gen_u16(u)?); // new_port
+    Ok(buf)
+}
+
+pub fn gen_channel_endpoint_changed(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    gen_u32(u) // channel_id
+}
+
