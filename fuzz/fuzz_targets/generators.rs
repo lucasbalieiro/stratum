@@ -10,6 +10,8 @@
 //!
 //! These generators are based on the current main branch of the Stratum V2
 //! specification at revision: 0925350f0aec36d15205bb87e0589c999c04b15f
+#![allow(dead_code)]
+
 use arbitrary::Unstructured;
 
 
@@ -170,5 +172,49 @@ pub fn gen_sv2_option(
     } else {
         Ok(vec![0u8])
     }
+}
+
+// ============================================================================
+// Common Messages
+// ============================================================================
+
+pub fn gen_setup_connection(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(128);
+    buf.push(u.int_in_range(0u8..=2)?); // protocol (valid discriminant only)
+    buf.extend_from_slice(&u.arbitrary::<u16>()?.to_le_bytes()); // min_version
+    buf.extend_from_slice(&u.arbitrary::<u16>()?.to_le_bytes()); // max_version
+    buf.extend_from_slice(&u.arbitrary::<u32>()?.to_le_bytes()); // flags
+    buf.extend_from_slice(&gen_str0255(u)?); // endpoint_host
+    buf.extend_from_slice(&u.arbitrary::<u16>()?.to_le_bytes()); // endpoint_port
+    buf.extend_from_slice(&gen_str0255(u)?); // vendor
+    buf.extend_from_slice(&gen_str0255(u)?); // hardware_version
+    buf.extend_from_slice(&gen_str0255(u)?); // firmware
+    buf.extend_from_slice(&gen_str0255(u)?); // device_id
+    Ok(buf)
+}
+
+pub fn gen_setup_connection_error(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(&u.arbitrary::<u32>()?.to_le_bytes()); // flags
+    buf.extend_from_slice(&gen_str0255(u)?); // error_code
+    Ok(buf)
+}
+
+pub fn gen_setup_connection_success(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(6);
+    buf.extend_from_slice(&u.arbitrary::<u16>()?.to_le_bytes()); // used_version
+    buf.extend_from_slice(&u.arbitrary::<u32>()?.to_le_bytes()); // flags
+    Ok(buf)
+}
+
+pub fn gen_reconnect(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(&gen_str0255(u)?); // new_host
+    buf.extend_from_slice(&u.arbitrary::<u16>()?.to_le_bytes()); // new_port
+    Ok(buf)
+}
+
+pub fn gen_channel_endpoint_changed(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    gen_u32(u) // channel_id
 }
 
