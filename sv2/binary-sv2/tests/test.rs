@@ -807,6 +807,32 @@ mod test_deep_encodable_field {
     }
 }
 
+mod test_seq_decode_ast {
+    use super::*;
+    use binary_sv2::decodable::FieldMarker;
+
+    #[derive(Deserialize)]
+    struct ExtensionRequest<'decoder> {
+        request_id: u16,
+        requested_extensions: Seq064K<'decoder, u16>,
+    }
+
+    #[test]
+    fn nested_seq064k_is_not_expanded_into_per_element_markers() {
+        let count = u16::MAX as usize;
+        let mut bytes = vec![0_u8; 2 + 2 + count * 2];
+        bytes[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        let structure = ExtensionRequest::get_structure(&bytes).unwrap();
+        assert_eq!(structure.len(), 2);
+        assert!(matches!(structure[1], FieldMarker::Raw(size) if size == bytes.len() - 2));
+
+        let decoded: ExtensionRequest = from_bytes(&mut bytes).unwrap();
+        assert_eq!(decoded.request_id, 0);
+        assert_eq!(decoded.requested_extensions.len(), count);
+    }
+}
+
 mod test_owned_visibility {
     macro_rules! define_plain {
         ($struct_vis:vis $name:ident, $field_vis:vis $field:ident) => {

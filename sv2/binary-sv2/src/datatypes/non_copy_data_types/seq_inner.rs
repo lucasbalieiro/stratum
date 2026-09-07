@@ -807,7 +807,7 @@ impl<T: GetSize> GetSize for Sv2OptionOwned<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::{Decodable, Seq064K};
+    use crate::{decodable::FieldMarker, Decodable, Seq064K, U256};
 
     #[test]
     fn sv2_option_as_ref_borrows_the_inner_value() {
@@ -841,5 +841,25 @@ mod test {
                 data.len()
             ),
         }
+    }
+
+    #[test]
+    fn get_structure_rejects_count_that_cannot_fit_element_width() {
+        let mut data = alloc::vec![0_u8; u16::MAX as usize + 2];
+        data[0] = 0xff;
+        data[1] = 0xff;
+
+        let result = <Seq064K<'static, U256<'static>> as Decodable<'static>>::get_structure(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_structure_describes_a_valid_sequence_with_one_marker() {
+        let count = u16::MAX as usize;
+        let mut data = alloc::vec![0_u8; 2 + count * 2];
+        data[..2].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        let markers = <Seq064K<'static, u16> as Decodable<'static>>::get_structure(&data).unwrap();
+        assert!(matches!(markers[..], [FieldMarker::Raw(size)] if size == data.len()));
     }
 }
