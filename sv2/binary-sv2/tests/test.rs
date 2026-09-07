@@ -767,6 +767,46 @@ mod test_fixed_size_hint_overflow {
     }
 }
 
+mod test_deep_encodable_field {
+    use super::*;
+    use binary_sv2::encodable::EncodablePrimitive;
+
+    fn nested(depth: usize) -> EncodableField<'static> {
+        let mut field = EncodableField::Primitive(EncodablePrimitive::U8(0x5a));
+        for _ in 0..depth {
+            field = EncodableField::Struct(vec![field]);
+        }
+        field
+    }
+
+    #[test]
+    fn deeply_nested_field_encodes_sizes_and_drops_without_recursion() {
+        let field = nested(100_000);
+        let mut dst = [0u8; 1];
+
+        assert_eq!(field.get_size(), 1);
+        assert_eq!(field.encode(&mut dst, 0), Ok(1));
+        assert_eq!(dst, [0x5a]);
+        drop(field);
+    }
+
+    #[test]
+    fn encode_reports_offset_past_buffer_end() {
+        let field = EncodableField::Struct(vec![
+            EncodableField::Primitive(EncodablePrimitive::U8(1)),
+            EncodableField::Primitive(EncodablePrimitive::U8(2)),
+        ]);
+        let mut dst = [0u8; 1];
+
+        assert_eq!(field.encode(&mut dst, 0), Err(Error::WriteError(1, 0)));
+        assert_eq!(field.encode(&mut dst, 2), Err(Error::WriteError(2, 1)));
+
+        let empty = EncodableField::Struct(vec![]);
+        assert_eq!(empty.encode(&mut dst, 1), Ok(0));
+        assert_eq!(empty.encode(&mut dst, 2), Err(Error::WriteError(2, 1)));
+    }
+}
+
 mod test_owned_visibility {
     macro_rules! define_plain {
         ($struct_vis:vis $name:ident, $field_vis:vis $field:ident) => {
