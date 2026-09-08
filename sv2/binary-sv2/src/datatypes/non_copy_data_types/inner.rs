@@ -11,7 +11,7 @@ use core::{
     fmt,
 };
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Inner<
     'a,
     const ISFIXED: bool,
@@ -22,7 +22,7 @@ pub struct Inner<
     data: &'a [u8],
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct InnerOwned<
     const ISFIXED: bool,
     const SIZE: usize,
@@ -125,6 +125,55 @@ fn write_hex<'a>(
         write!(writer, "{byte:02x}")?;
     }
     Ok(())
+}
+
+/// Longest prefix, in bytes, that `Display`, `Debug` and the `as_hex` helpers hex-encode.
+///
+/// Set to the largest `B0255`/`Str0255` value so those never truncate.
+pub(super) const MAX_DISPLAY_BYTES: usize = 255;
+
+/// Hex-encodes at most [`MAX_DISPLAY_BYTES`] bytes straight into the formatter, followed by how
+/// many hex characters were left out.
+pub(super) struct HexPrefix<'a>(pub(super) &'a [u8]);
+
+impl fmt::Display for HexPrefix<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let shown = self.0.len().min(MAX_DISPLAY_BYTES);
+        write_hex(&self.0[..shown], f)?;
+        let truncated = (self.0.len() - shown) * 2;
+        if truncated > 0 {
+            write!(f, "…<truncated {truncated} chars>")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for HexPrefix<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl<'a, const ISFIXED: bool, const SIZE: usize, const HEADERSIZE: usize, const MAXSIZE: usize>
+    fmt::Debug for Inner<'a, ISFIXED, SIZE, HEADERSIZE, MAXSIZE>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Inner")
+            .field("len", &self.data.len())
+            .field("data", &HexPrefix(self.data))
+            .finish()
+    }
+}
+
+impl<const ISFIXED: bool, const SIZE: usize, const HEADERSIZE: usize, const MAXSIZE: usize>
+    fmt::Debug for InnerOwned<ISFIXED, SIZE, HEADERSIZE, MAXSIZE>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InnerOwned")
+            .field("len", &self.data.len())
+            .field("data", &HexPrefix(&self.data))
+            .finish()
+    }
 }
 
 fn max_encodable_len(header_size: usize) -> usize {
