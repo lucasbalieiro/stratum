@@ -28,6 +28,7 @@ use core::fmt::Write as _;
 pub(crate) mod inner;
 mod seq_inner;
 
+use inner::HexPrefix;
 pub use inner::ERROR_SAMPLE_LEN;
 pub(crate) use inner::{Inner, InnerOwned};
 pub use seq_inner::{Seq0255, Seq0255Owned, Seq064K, Seq064KOwned, Sv2Option, Sv2OptionOwned};
@@ -79,8 +80,6 @@ fn bytes_to_hex<'a>(bytes: impl IntoIterator<Item = &'a u8>) -> String {
     hex
 }
 
-const MAX_DISPLAY_BYTES: usize = 250;
-
 impl fmt::Display for Sv2Option<'_, u32> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let inner = self.to_owned().into_inner();
@@ -103,15 +102,13 @@ impl fmt::Display for Sv2OptionOwned<u32> {
 
 impl B0255<'_> {
     pub fn as_hex(&self) -> String {
-        let inner = bytes_to_hex(self.as_bytes());
-        format!("B0255({inner})")
+        format!("B0255({})", HexPrefix(self.as_bytes()))
     }
 }
 
 impl B0255Owned {
     pub fn as_hex(&self) -> String {
-        let inner = bytes_to_hex(self.as_bytes());
-        format!("B0255({inner})")
+        format!("B0255({})", HexPrefix(self.as_bytes()))
     }
 }
 
@@ -137,15 +134,13 @@ impl Str0255Owned {
 
 impl fmt::Display for B064K<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = bytes_to_hex(self.as_bytes());
-        write!(f, "B064K({inner})")
+        write!(f, "B064K({})", HexPrefix(self.as_bytes()))
     }
 }
 
 impl fmt::Display for B064KOwned {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = bytes_to_hex(self.as_bytes());
-        write!(f, "B064K({inner})")
+        write!(f, "B064K({})", HexPrefix(self.as_bytes()))
     }
 }
 
@@ -223,37 +218,30 @@ impl fmt::Display for Seq064K<'_, B016M<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let len = self.len();
 
-        let as_hex = |item: &B016M<'_>| {
-            let bytes = item.as_bytes();
-            if bytes.len() <= MAX_DISPLAY_BYTES {
-                return bytes_to_hex(bytes);
-            }
-            let truncated = (bytes.len() - MAX_DISPLAY_BYTES) * 2;
-            format!(
-                "{}…<truncated {truncated} chars>",
-                bytes_to_hex(&bytes[..MAX_DISPLAY_BYTES])
-            )
-        };
-
         write!(f, "Seq064K<len={len}: ")?;
         match len {
             0 => write!(f, "[]"),
-            1 => write!(f, "[{}]", as_hex(&self[0])),
-            2 => write!(f, "[{}, {}]", as_hex(&self[0]), as_hex(&self[1])),
+            1 => write!(f, "[{}]", HexPrefix(self[0].as_bytes())),
+            2 => write!(
+                f,
+                "[{}, {}]",
+                HexPrefix(self[0].as_bytes()),
+                HexPrefix(self[1].as_bytes())
+            ),
             3 => write!(
                 f,
                 "[{}, {}, {}]",
-                as_hex(&self[0]),
-                as_hex(&self[1]),
-                as_hex(&self[2])
+                HexPrefix(self[0].as_bytes()),
+                HexPrefix(self[1].as_bytes()),
+                HexPrefix(self[2].as_bytes())
             ),
             _ => write!(
                 f,
                 "[{}, {}, … , {}, {}]",
-                as_hex(&self[0]),
-                as_hex(&self[1]),
-                as_hex(&self[len - 2]),
-                as_hex(&self[len - 1])
+                HexPrefix(self[0].as_bytes()),
+                HexPrefix(self[1].as_bytes()),
+                HexPrefix(self[len - 2].as_bytes()),
+                HexPrefix(self[len - 1].as_bytes())
             ),
         }
     }
@@ -263,37 +251,30 @@ impl fmt::Display for Seq064KOwned<B016MOwned> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let len = self.len();
 
-        let as_hex = |item: &B016MOwned| {
-            let bytes = item.as_bytes();
-            if bytes.len() <= MAX_DISPLAY_BYTES {
-                return bytes_to_hex(bytes);
-            }
-            let truncated = (bytes.len() - MAX_DISPLAY_BYTES) * 2;
-            format!(
-                "{}…<truncated {truncated} chars>",
-                bytes_to_hex(&bytes[..MAX_DISPLAY_BYTES])
-            )
-        };
-
         write!(f, "Seq064K<len={len}: ")?;
         match len {
             0 => write!(f, "[]"),
-            1 => write!(f, "[{}]", as_hex(&self[0])),
-            2 => write!(f, "[{}, {}]", as_hex(&self[0]), as_hex(&self[1])),
+            1 => write!(f, "[{}]", HexPrefix(self[0].as_bytes())),
+            2 => write!(
+                f,
+                "[{}, {}]",
+                HexPrefix(self[0].as_bytes()),
+                HexPrefix(self[1].as_bytes())
+            ),
             3 => write!(
                 f,
                 "[{}, {}, {}]",
-                as_hex(&self[0]),
-                as_hex(&self[1]),
-                as_hex(&self[2])
+                HexPrefix(self[0].as_bytes()),
+                HexPrefix(self[1].as_bytes()),
+                HexPrefix(self[2].as_bytes())
             ),
             _ => write!(
                 f,
                 "[{}, {}, … , {}, {}]",
-                as_hex(&self[0]),
-                as_hex(&self[1]),
-                as_hex(&self[len - 2]),
-                as_hex(&self[len - 1])
+                HexPrefix(self[0].as_bytes()),
+                HexPrefix(self[1].as_bytes()),
+                HexPrefix(self[len - 2].as_bytes()),
+                HexPrefix(self[len - 1].as_bytes())
             ),
         }
     }
