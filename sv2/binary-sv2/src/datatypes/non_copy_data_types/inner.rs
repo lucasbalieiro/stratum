@@ -690,8 +690,11 @@ impl<const ISFIXED: bool, const SIZE: usize, const HEADERSIZE: usize, const MAXS
 
 #[cfg(test)]
 mod test {
-    use super::{Inner, InnerOwned, ERROR_SAMPLE_LEN};
-    use crate::{B032Owned, Error, GetSize, SignatureOwned, SizeHint, U256Owned, B032, U256};
+    use super::{Inner, InnerOwned, ERROR_SAMPLE_LEN, MAX_DISPLAY_BYTES};
+    use crate::{
+        B032Owned, B064KOwned, Error, GetSize, SignatureOwned, SizeHint, U256Owned, B032, B064K,
+        U256,
+    };
     extern crate std;
     use self::std::panic::catch_unwind;
 
@@ -894,5 +897,64 @@ mod test {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn debug_prints_a_bounded_hex_prefix() {
+        let full = vec![0xAB_u8; u16::MAX as usize];
+        let borrowed = B064K::new(&full).unwrap();
+        let owned: B064KOwned = full.clone().try_into().unwrap();
+
+        let rendered = format!("{borrowed:?}");
+        let expected_prefix = format!(
+            "Inner {{ len: 65535, data: {}",
+            "ab".repeat(MAX_DISPLAY_BYTES)
+        );
+        assert!(rendered.starts_with(&expected_prefix), "{rendered}");
+        assert!(
+            rendered.ends_with("…<truncated 130560 chars> }"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.len() < 2 * MAX_DISPLAY_BYTES + 100,
+            "{}",
+            rendered.len()
+        );
+
+        let rendered = format!("{owned:?}");
+        assert!(
+            rendered.starts_with("InnerOwned { len: 65535, data: abab"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.ends_with("…<truncated 130560 chars> }"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.len() < 2 * MAX_DISPLAY_BYTES + 100,
+            "{}",
+            rendered.len()
+        );
+    }
+
+    #[test]
+    fn debug_prints_short_values_in_full() {
+        let bytes = [0x01_u8, 0x02, 0xff];
+        assert_eq!(
+            format!("{:?}", B032::new(&bytes).unwrap()),
+            "Inner { len: 3, data: 0102ff }"
+        );
+        assert_eq!(
+            format!("{:?}", B032Owned::try_from(bytes.as_slice()).unwrap()),
+            "InnerOwned { len: 3, data: 0102ff }"
+        );
+
+        let boundary = vec![0x0f_u8; MAX_DISPLAY_BYTES];
+        let rendered = format!("{:?}", B064K::new(&boundary).unwrap());
+        assert!(!rendered.contains("truncated"), "{rendered}");
+        assert!(
+            rendered.ends_with(&("0f".repeat(MAX_DISPLAY_BYTES) + " }")),
+            "{rendered}"
+        );
     }
 }
