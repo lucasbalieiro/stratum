@@ -24,6 +24,11 @@ pub struct SetCustomMiningJob<'decoder> {
     pub request_id: u32,
     /// Provide the information for the upstream to authorize the custom job that has been or will
     /// be negotiated between the Job Declarator Client and Job Declarator Server.
+    ///
+    /// Not a secret. The token is a capability scoped to one job declaration, and presenting it
+    /// requires an authenticated connection as the JDC it was issued to, so a copy recovered from
+    /// a log grants no access on its own. It is therefore printed in full rather than redacted:
+    /// the value is what correlates a declaration across JDC, JDS and pool logs.
     pub token: B0255<'decoder>,
     /// Version field that reflects the current network consensus.
     ///

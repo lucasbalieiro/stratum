@@ -16,6 +16,11 @@ pub struct DeclareMiningJob<'decoder> {
     /// Used for pairing request/response.
     pub request_id: u32,
     /// Token received previously through [`crate::AllocateMiningJobTokenSuccess`] message.
+    ///
+    /// Not a secret. The token is a capability scoped to one job declaration, and presenting it
+    /// requires an authenticated connection as the JDC it was issued to, so a copy recovered from
+    /// a log grants no access on its own. It is therefore printed in full rather than redacted:
+    /// the value is what correlates a declaration across JDC, JDS and pool logs.
     pub mining_job_token: B0255<'decoder>,
     /// Header version field.
     pub version: u32,
@@ -83,6 +88,11 @@ pub struct DeclareMiningJobSuccess<'decoder> {
     /// to start mining on a non declared job. If the token is different (irrespective of if the
     /// downstream is already mining using it), the downstream **must** send a `SetCustomMiningJob`
     /// message on each connection which wishes to mine using the declared job.
+    ///
+    /// Not a secret. The token is a capability scoped to one job declaration, and presenting it
+    /// requires an authenticated connection as the JDC it was issued to, so a copy recovered from
+    /// a log grants no access on its own. It is therefore printed in full rather than redacted:
+    /// the value is what correlates a declaration across JDC, JDS and pool logs.
     pub new_mining_job_token: B0255<'decoder>,
 }
 
