@@ -556,3 +556,88 @@ pub fn gen_submit_solution(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
     buf.extend_from_slice(&gen_b064k(u)?); // coinbase_tx
     Ok(buf)
 }
+
+// ---------------------------------------------------------------------------
+// Frame generators
+// ---------------------------------------------------------------------------
+
+fn gen_message_payload(u: &mut Unstructured) -> arbitrary::Result<(u8, bool, Vec<u8>)> {
+    let idx: u8 = u.int_in_range(0..=44)?;
+    match idx {
+        // Common messages (0x00..=0x04)
+        0 => Ok((0x00, false, gen_setup_connection(u)?)),
+        1 => Ok((0x01, false, gen_setup_connection_success(u)?)),
+        2 => Ok((0x02, false, gen_setup_connection_error(u)?)),
+        3 => Ok((0x03, true, gen_channel_endpoint_changed(u)?)),
+        4 => Ok((0x04, false, gen_reconnect(u)?)),
+
+        // Mining messages (0x10..=0x25)
+        5 => Ok((0x10, false, gen_open_standard_mining_channel(u)?)),
+        6 => Ok((0x11, false, gen_open_standard_mining_channel_success(u)?)),
+        7 => Ok((0x12, false, gen_open_mining_channel_error(u)?)),
+        8 => Ok((0x13, false, gen_open_extended_mining_channel(u)?)),
+        9 => Ok((0x14, false, gen_open_extended_mining_channel_success(u)?)),
+        10 => Ok((0x15, true, gen_new_mining_job(u)?)),
+        11 => Ok((0x16, true, gen_update_channel(u)?)),
+        12 => Ok((0x17, true, gen_update_channel_error(u)?)),
+        13 => Ok((0x18, true, gen_close_channel(u)?)),
+        14 => Ok((0x19, true, gen_set_extranonce_prefix(u)?)),
+        15 => Ok((0x1a, true, gen_submit_shares_standard(u)?)),
+        16 => Ok((0x1b, true, gen_submit_shares_extended(u)?)),
+        17 => Ok((0x1c, true, gen_submit_shares_success(u)?)),
+        18 => Ok((0x1d, true, gen_submit_shares_error(u)?)),
+        // 0x1e is reserved (unsure why)
+        19 => Ok((0x1f, true, gen_new_extended_mining_job(u)?)),
+        20 => Ok((0x20, true, gen_set_new_prev_hash_mining(u)?)),
+        21 => Ok((0x21, true, gen_set_target(u)?)),
+        22 => Ok((0x22, true, gen_set_custom_mining_job(u)?)),
+        23 => Ok((0x23, true, gen_set_custom_mining_job_success(u)?)),
+        24 => Ok((0x24, true, gen_set_custom_mining_job_error(u)?)),
+        25 => Ok((0x25, false, gen_set_group_channel(u)?)),
+
+        // Job Declaration messages (0x50..=0x60)
+        26 => Ok((0x50, false, gen_allocate_mining_job_token(u)?)),
+        27 => Ok((0x51, false, gen_allocate_mining_job_token_success(u)?)),
+        28 => Ok((0x55, false, gen_provide_missing_transactions(u)?)),
+        29 => Ok((0x56, false, gen_provide_missing_transactions_success(u)?)),
+        30 => Ok((0x57, false, gen_declare_mining_job(u)?)),
+        31 => Ok((0x58, false, gen_declare_mining_job_success(u)?)),
+        32 => Ok((0x59, false, gen_declare_mining_job_error(u)?)),
+        33 => Ok((0x60, false, gen_push_solution(u)?)),
+
+        // Template Distribution messages (0x70..=0x76)
+        34 => Ok((0x70, false, gen_coinbase_output_constraints(u)?)),
+        35 => Ok((0x71, false, gen_new_template(u)?)),
+        36 => Ok((0x72, false, gen_set_new_prev_hash_template(u)?)),
+        37 => Ok((0x73, false, gen_request_transaction_data(u)?)),
+        38 => Ok((0x74, false, gen_request_transaction_data_success(u)?)),
+        39 => Ok((0x75, false, gen_request_transaction_data_error(u)?)),
+        40 => Ok((0x76, false, gen_submit_solution(u)?)),
+
+        // Fallback: random payload for any remaining index
+        _ => {
+            let msg_type = u.int_in_range(0..=0x76)?;
+            let payload_len: usize = u.int_in_range(0..=256)?;
+            let payload = u.arbitrary::<Vec<u8>>()?.into_iter().take(payload_len).collect();
+            let channel_msg = matches!(msg_type, 0x15..=0x24);
+            Ok((msg_type, channel_msg, payload))
+        }
+    }
+}
+
+pub fn gen_sv2_frame(u: &mut Unstructured) -> arbitrary::Result<Vec<u8>> {
+    let (msg_type, channel_msg, payload) = gen_message_payload(u)?;
+
+    let extension_type: u16 = if channel_msg {
+        u.int_in_range(0x8000..=0xFFFF)?
+    } else {
+        u.int_in_range(0x0000..=0x7FFF)?
+    };
+
+    let mut frame = Vec::with_capacity(6 + payload.len());
+    frame.extend_from_slice(&extension_type.to_le_bytes());
+    frame.push(msg_type);
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes()[..3]);
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
