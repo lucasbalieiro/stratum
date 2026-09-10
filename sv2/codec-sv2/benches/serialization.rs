@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::MessageFrame;
 
 mod common;
 use common::TestMsg;
@@ -8,7 +8,7 @@ fn bench_frame_from_message(c: &mut Criterion) {
     c.bench_function("serialization/frame_from_message", |b| {
         let msg = TestMsg { data: 42u8 };
         b.iter(|| {
-            let frame = Sv2Frame::<TestMsg>::from_message(msg.clone(), 0, 0, true).unwrap();
+            let frame = MessageFrame::<TestMsg>::from_message(msg.clone(), 0, 0, true).unwrap();
             black_box(frame);
         })
     });
@@ -19,7 +19,7 @@ fn bench_frame_serialize_roundtrip(c: &mut Criterion) {
         let msg = TestMsg { data: 42u8 };
 
         b.iter(|| {
-            let frame = Sv2Frame::<TestMsg>::from_message(msg.clone(), 0, 0, true).unwrap();
+            let frame = MessageFrame::<TestMsg>::from_message(msg.clone(), 0, 0, true).unwrap();
             let mut buf = vec![0; frame.encoded_length()];
             frame.serialize(&mut buf).unwrap();
             black_box(buf);

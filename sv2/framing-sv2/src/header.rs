@@ -2,7 +2,7 @@
 //!
 //! Defines the [`crate::header::Header`] structure used in the framing of Sv2 messages.
 //!
-//! Each [`crate::framing::Sv2Frame`] starts with a 6-byte header with information about the
+//! Each [`crate::framing::MessageFrame`] starts with a 6-byte header with information about the
 //! message payload, including its extension type, if it is associated with a specific mining
 //! channel, the type of message (e.g. `SetupConnection`, `NewMiningJob`, etc.) and the payload
 //! length.

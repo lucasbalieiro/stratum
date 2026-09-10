@@ -15,8 +15,8 @@
 // ```
 
 use binary_sv2::{Deserialize, Serialize};
-use codec_sv2::{Decoded, Decoder, Encoder, Sv2Frame};
-use framing_sv2::framing::SerializedSv2Frame;
+use codec_sv2::{Decoded, Decoder, Encoder, MessageFrame};
+use framing_sv2::framing::SerializedFrame;
 use std::{
     convert::TryInto,
     io::{Read, Write},
@@ -101,8 +101,9 @@ fn sender_side(
     channel_msg: bool,
 ) {
     // Create the frame
-    let frame = Sv2Frame::<CustomMessage>::from_message(msg, msg_type, extension_type, channel_msg)
-        .expect("Failed to create the frame");
+    let frame =
+        MessageFrame::<CustomMessage>::from_message(msg, msg_type, extension_type, channel_msg)
+            .expect("Failed to create the frame");
 
     // Encode the frame
     let mut encoder = Encoder::new();
@@ -116,10 +117,7 @@ fn sender_side(
         .expect("Failed to send the encoded frame");
 }
 
-fn receiver_side(
-    mut stream_receiver: TcpStream,
-    decoder: &mut Decoder,
-) -> SerializedSv2Frame<Slice> {
+fn receiver_side(mut stream_receiver: TcpStream, decoder: &mut Decoder) -> SerializedFrame<Slice> {
     // Continuously read the frame from the TCP stream into the decoder buffer until the full
     // message is received.
     //

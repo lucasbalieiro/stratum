@@ -4,9 +4,9 @@
 //! compile time:
 //!
 //! ```text
-//! Handshake<Initiator>     --step_0()-------> (HandshakeFrame, Handshake<InitiatorSent>)
+//! Handshake<Initiator>     --step_0()-------> (HandshakeMessage, Handshake<InitiatorSent>)
 //! Handshake<InitiatorSent> --step_2(msg)----> Transport
-//! Handshake<Responder>     --step_1(re_pub)-> (HandshakeFrame, Transport)
+//! Handshake<Responder>     --step_1(re_pub)-> (HandshakeMessage, Transport)
 //! Transport                --split()--------> (TransportEncryptState, TransportDecryptState)
 //! ```
 //!
@@ -22,7 +22,7 @@
 use crate::Result;
 use alloc::boxed::Box;
 use buffer_sv2::AeadBuffer;
-use framing_sv2::framing::HandshakeFrame;
+use framing_sv2::framing::HandshakeMessage;
 use noise_sv2::{
     Initiator, NoiseDecryptor, NoiseEncryptor, NoiseEngine, Responder, ELLSWIFT_ENCODING_SIZE,
     INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
@@ -125,10 +125,10 @@ impl Handshake<Initiator> {
     /// [`Handshake::step_2`]. Sending is the caller's job: if it fails, the whole handshake
     /// starts over from a fresh [`Initiator`], because this step has already mixed the message
     /// into the transcript and repeating it would leave the two sides unable to agree.
-    pub fn step_0(mut self) -> Result<(HandshakeFrame, Handshake<InitiatorSent>)> {
+    pub fn step_0(mut self) -> Result<(HandshakeMessage, Handshake<InitiatorSent>)> {
         let message = self.role.step_0()?;
         Ok((
-            HandshakeFrame::from_message(message),
+            HandshakeMessage::from_message(message),
             Handshake {
                 role: Box::new(InitiatorSent(*self.role)),
             },
@@ -178,10 +178,10 @@ impl Handshake<Responder> {
     pub fn step_1(
         mut self,
         re_pub: [u8; ELLSWIFT_ENCODING_SIZE],
-    ) -> Result<(HandshakeFrame, Transport)> {
+    ) -> Result<(HandshakeMessage, Transport)> {
         let (message, engine) = self.role.step_1(re_pub)?;
         Ok((
-            HandshakeFrame::from_message(message),
+            HandshakeMessage::from_message(message),
             Transport::new(engine),
         ))
     }
@@ -194,10 +194,10 @@ impl Handshake<Responder> {
         re_pub: [u8; ELLSWIFT_ENCODING_SIZE],
         now: u32,
         rng: &mut G,
-    ) -> Result<(HandshakeFrame, Transport)> {
+    ) -> Result<(HandshakeMessage, Transport)> {
         let (message, engine) = self.role.step_1_with_now_rng(re_pub, now, rng)?;
         Ok((
-            HandshakeFrame::from_message(message),
+            HandshakeMessage::from_message(message),
             Transport::new(engine),
         ))
     }

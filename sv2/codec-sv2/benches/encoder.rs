@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::MessageFrame;
 
 use codec_sv2::Encoder;
 
@@ -16,7 +16,7 @@ fn bench_plain_encoder(c: &mut Criterion) {
         let msg = TestMsg { data: 42u8 };
         let mut enc = Encoder::new();
         b.iter(|| {
-            let frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
+            let frame = MessageFrame::from_message(msg.clone(), 0, 0, true).unwrap();
             let out = enc.encode(black_box(frame)).unwrap();
             black_box(out);
         })
@@ -43,7 +43,7 @@ fn bench_noise_encoder_transport(c: &mut Criterion) {
         let mut enc = NoiseEncoder::new();
 
         b.iter(|| {
-            let frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
+            let frame = MessageFrame::from_message(msg.clone(), 0, 0, true).unwrap();
             let out = enc.encode_transport(black_box(frame), &mut state).unwrap();
             black_box(out);
         })

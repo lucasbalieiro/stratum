@@ -108,10 +108,10 @@ pub type Slice = Vec<u8>;
 /// One encoded frame carrying a `ZeroCopyMsgOwned` with a coinbase of the given size.
 #[allow(dead_code)]
 pub fn make_encoded_frame(coinbase_size: usize) -> Vec<u8> {
-    use framing_sv2::framing::Sv2Frame;
+    use framing_sv2::framing::MessageFrame;
 
     let msg = ZeroCopyMsgOwned::new_owned(1, coinbase_size);
-    let frame = Sv2Frame::<ZeroCopyMsgOwned>::from_message(msg, 0, 0, true).unwrap();
+    let frame = MessageFrame::<ZeroCopyMsgOwned>::from_message(msg, 0, 0, true).unwrap();
     let mut buf = vec![0u8; frame.encoded_length()];
     frame.serialize(&mut buf).unwrap();
     buf
@@ -122,7 +122,7 @@ pub fn make_encoded_frame(coinbase_size: usize) -> Vec<u8> {
 pub fn acquire_frame(
     dec: &mut codec_sv2::Decoder,
     enc_buf: &[u8],
-) -> framing_sv2::framing::SerializedSv2Frame<Slice> {
+) -> framing_sv2::framing::SerializedFrame<Slice> {
     let w = dec.writable();
     let header_len = w.len();
     w.copy_from_slice(&enc_buf[..header_len]);

@@ -9,7 +9,7 @@ use codec_sv2::{
 };
 
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::MessageFrame;
 
 #[cfg(feature = "noise_sv2")]
 #[cfg(feature = "noise_sv2")]
@@ -54,7 +54,7 @@ fn bench_noise_roundtrip(c: &mut Criterion) {
             let (mut enc, _, mut enc_state, mut dec_state) = setup_noise_engine_pair();
 
             // Encode
-            let frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
+            let frame = MessageFrame::from_message(msg.clone(), 0, 0, true).unwrap();
             let encrypted = enc
                 .encode_transport(black_box(frame), &mut enc_state)
                 .unwrap();
@@ -95,7 +95,7 @@ fn bench_noise_encode_only(c: &mut Criterion) {
         let msg = TestMsg { data: 42u8 };
 
         b.iter(|| {
-            let frame = Sv2Frame::from_message(msg.clone(), 0, 0, true).unwrap();
+            let frame = MessageFrame::from_message(msg.clone(), 0, 0, true).unwrap();
             let encrypted = enc
                 .encode_transport(black_box(frame), &mut enc_state)
                 .unwrap();

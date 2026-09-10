@@ -54,8 +54,8 @@ pub(crate) mod test_utils;
 pub use error::{Error, Result};
 
 #[cfg(feature = "noise_sv2")]
-pub use framing_sv2::framing::HandshakeFrame;
-pub use framing_sv2::framing::{EncodableFrame, SerializedSv2Frame, SizeHint, Sv2Frame};
+pub use framing_sv2::framing::HandshakeMessage;
+pub use framing_sv2::framing::{EncodableFrame, MessageFrame, SizeHint};
 
 pub use decoder::{Decoded, Decoder};
 #[cfg(feature = "noise_sv2")]
@@ -95,8 +95,9 @@ pub fn encrypted_payload_length(header: &Header) -> usize {
 
 pub(crate) const DEFAULT_POOL_BUFFER_SIZE: usize = 2_usize.pow(16) * 5;
 
-/// An Sv2 frame as the decoders hand it back, carrying the bytes read off the wire.
-pub type StandardSerializedFrame = SerializedSv2Frame<<Buffer as IsBuffer>::Slice>;
+/// A [`framing_sv2::framing::SerializedFrame`] over the buffer the `with_buffer_pool` feature
+/// selects, which is what the decoders hand back and what an encoder takes to forward one on.
+pub type SerializedFrame = framing_sv2::framing::SerializedFrame<<Buffer as IsBuffer>::Slice>;
 
 #[cfg(test)]
 #[cfg(feature = "noise_sv2")]
@@ -107,7 +108,7 @@ mod tests {
         TransportEncryptState, SV2_FRAME_PLAINTEXT_CHUNK_SIZE,
     };
     use binary_sv2::{Deserialize, Serialize, B064K};
-    use framing_sv2::{framing::Sv2Frame, header::Header, SV2_FRAME_HEADER_SIZE};
+    use framing_sv2::{framing::MessageFrame, header::Header, SV2_FRAME_HEADER_SIZE};
     use noise_sv2::{
         Responder, AEAD_MAC_LEN, ELLSWIFT_ENCODING_SIZE, INITIATOR_EXPECTED_HANDSHAKE_MESSAGE_SIZE,
     };
@@ -134,7 +135,7 @@ mod tests {
         dec: TransportDecryptState,
         nonce: u16,
     ) -> (u16, TransportDecryptState) {
-        let frame = Sv2Frame::from_message(TestMsg { nonce }, MSG_TYPE, 0, false).unwrap();
+        let frame = MessageFrame::from_message(TestMsg { nonce }, MSG_TYPE, 0, false).unwrap();
         let encrypted = encoder.encode_transport(frame, enc).unwrap();
 
         let (mut frame, dec) = decode_noise_frame(decoder, dec, encrypted.as_ref())
@@ -186,7 +187,7 @@ mod tests {
             data: (&mut data[..]).try_into().unwrap(),
         };
 
-        let frame = Sv2Frame::from_message(msg, MSG_TYPE, 0, false).unwrap();
+        let frame = MessageFrame::from_message(msg, MSG_TYPE, 0, false).unwrap();
         let mut encoder = NoiseEncoder::new();
         let encrypted = encoder.encode_transport(frame, &mut initiator_enc).unwrap();
 
@@ -239,7 +240,7 @@ mod tests {
     fn read_handshake_frame<R: crate::ExpectsHandshakeMessage>(
         decoder: &mut NoiseDecoder,
         encoded: &[u8],
-    ) -> framing_sv2::framing::HandshakeFrame {
+    ) -> framing_sv2::framing::HandshakeMessage {
         let mut offset = 0;
         loop {
             let writable = decoder.writable();

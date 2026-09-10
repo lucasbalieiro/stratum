@@ -44,7 +44,7 @@ use core::{
 };
 pub use error::ParserError;
 use extensions_sv2::*;
-use framing_sv2::{framing::Sv2Frame, header::Header};
+use framing_sv2::{framing::MessageFrame, header::Header};
 use job_declaration_sv2::*;
 use mining_sv2::*;
 use template_distribution_sv2::*;
@@ -2455,40 +2455,40 @@ impl<T: Into<CommonMessagesOwned>> From<T> for MiningDeviceMessagesOwned {
     }
 }
 
-impl<'decoder> TryFrom<AnyMessage<'decoder>> for Sv2Frame<AnyMessage<'decoder>> {
+impl<'decoder> TryFrom<AnyMessage<'decoder>> for MessageFrame<AnyMessage<'decoder>> {
     type Error = ParserError;
 
     fn try_from(v: AnyMessage<'decoder>) -> Result<Self, ParserError> {
         let extension_type = v.extension_type();
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
-        Sv2Frame::from_message(v, message_type, extension_type, channel_bit)
+        MessageFrame::from_message(v, message_type, extension_type, channel_bit)
             .ok_or(ParserError::BadPayloadSize)
     }
 }
 
-impl TryFrom<AnyMessageOwned> for Sv2Frame<AnyMessageOwned> {
+impl TryFrom<AnyMessageOwned> for MessageFrame<AnyMessageOwned> {
     type Error = ParserError;
 
     fn try_from(v: AnyMessageOwned) -> Result<Self, ParserError> {
         let extension_type = v.extension_type();
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
-        Sv2Frame::from_message(v, message_type, extension_type, channel_bit)
+        MessageFrame::from_message(v, message_type, extension_type, channel_bit)
             .ok_or(ParserError::BadPayloadSize)
     }
 }
 
 macro_rules! impl_owned_frame_try_from {
     ($message:ty) => {
-        impl TryFrom<$message> for Sv2Frame<$message> {
+        impl TryFrom<$message> for MessageFrame<$message> {
             type Error = ParserError;
 
             fn try_from(v: $message) -> Result<Self, ParserError> {
                 let extension_type = v.extension_type();
                 let channel_bit = v.channel_bit();
                 let message_type = v.message_type();
-                Sv2Frame::from_message(v, message_type, extension_type, channel_bit)
+                MessageFrame::from_message(v, message_type, extension_type, channel_bit)
                     .ok_or(ParserError::BadPayloadSize)
             }
         }
@@ -2502,7 +2502,7 @@ impl_owned_frame_try_from!(TemplateDistributionOwned);
 impl_owned_frame_try_from!(ExtensionsOwned);
 
 impl<'decoder> TryFrom<MiningDeviceMessages<'decoder>>
-    for Sv2Frame<MiningDeviceMessages<'decoder>>
+    for MessageFrame<MiningDeviceMessages<'decoder>>
 {
     type Error = ParserError;
 
@@ -2510,25 +2510,25 @@ impl<'decoder> TryFrom<MiningDeviceMessages<'decoder>>
         let extension_type = v.extension_type();
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
-        Sv2Frame::from_message(v, message_type, extension_type, channel_bit)
+        MessageFrame::from_message(v, message_type, extension_type, channel_bit)
             .ok_or(ParserError::BadPayloadSize)
     }
 }
 
-impl TryFrom<MiningDeviceMessagesOwned> for Sv2Frame<MiningDeviceMessagesOwned> {
+impl TryFrom<MiningDeviceMessagesOwned> for MessageFrame<MiningDeviceMessagesOwned> {
     type Error = ParserError;
 
     fn try_from(v: MiningDeviceMessagesOwned) -> Result<Self, ParserError> {
         let extension_type = v.extension_type();
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
-        Sv2Frame::from_message(v, message_type, extension_type, channel_bit)
+        MessageFrame::from_message(v, message_type, extension_type, channel_bit)
             .ok_or(ParserError::BadPayloadSize)
     }
 }
 
 impl<'decoder> TryFrom<TemplateDistribution<'decoder>>
-    for Sv2Frame<TemplateDistribution<'decoder>>
+    for MessageFrame<TemplateDistribution<'decoder>>
 {
     type Error = ParserError;
 
@@ -2536,7 +2536,7 @@ impl<'decoder> TryFrom<TemplateDistribution<'decoder>>
         let extension_type = 0;
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
-        Sv2Frame::from_message(v, message_type, extension_type, channel_bit)
+        MessageFrame::from_message(v, message_type, extension_type, channel_bit)
             .ok_or(ParserError::BadPayloadSize)
     }
 }
@@ -2659,7 +2659,7 @@ mod test {
     use alloc::vec;
     use alloc::vec::Vec;
     use binary_sv2::{Seq0255, Seq064K, Str0255, Sv2Option, B0255, B032, B064K, U256};
-    use codec_sv2::Sv2Frame;
+    use codec_sv2::MessageFrame;
     use core::convert::{TryFrom, TryInto};
     use extensions_sv2::{RequestExtensions, EXTENSION_TYPE_EXTENSIONS_NEGOTIATION};
     use job_declaration_sv2::PushSolution;
@@ -2668,7 +2668,7 @@ mod test {
     };
 
     pub type Message<'a> = AnyMessage<'a>;
-    pub type StdFrame<'a> = Sv2Frame<Message<'a>>;
+    pub type StdFrame<'a> = MessageFrame<Message<'a>>;
 
     #[test]
     fn request_extensions_serialization() {

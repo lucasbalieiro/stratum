@@ -57,7 +57,7 @@ Requires `noise_sv2` feature.
 
 ### 4. Serialization (`serialization.rs`)
 
-- **`serialization/frame_from_message`** — `Sv2Frame::from_message()`: builds the header and
+- **`serialization/frame_from_message`** — `MessageFrame::from_message()`: builds the header and
   holds the message, no serialization yet
 - **`serialization/frame_serialization_roundtrip`** — `from_message()` followed by
   `serialize()` into a caller-provided buffer
@@ -75,7 +75,7 @@ patterns — specifically the cost difference between **holding decoded frames**
 immediately after deserialization).
 
 Two variants appear in every group:
-- **`zc_hold`** — decoded `Sv2Frame` is kept alive; pool slot is pinned for the
+- **`zc_hold`** — decoded `MessageFrame` is kept alive; pool slot is pinned for the
   lifetime of the frame.
 - **`owned_release`** — payload is copied into an `OwnedMsg` and the frame is
   dropped immediately, freeing the pool slot for reuse.

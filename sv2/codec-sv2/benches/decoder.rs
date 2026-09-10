@@ -2,7 +2,7 @@ extern crate alloc;
 
 use codec_sv2::{Decoded, Decoder};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::MessageFrame;
 
 mod common;
 use common::TestMsg;
@@ -10,7 +10,7 @@ use common::TestMsg;
 fn bench_plain_decoder(c: &mut Criterion) {
     c.bench_function("decoder/plain", |b| {
         let msg = TestMsg { data: 7u8 };
-        let frame = Sv2Frame::<TestMsg>::from_message(msg, 0, 0, true).unwrap();
+        let frame = MessageFrame::<TestMsg>::from_message(msg, 0, 0, true).unwrap();
 
         let mut enc_buf = vec![0; frame.encoded_length()];
         frame.serialize(&mut enc_buf).unwrap();

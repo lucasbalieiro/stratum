@@ -2,7 +2,7 @@ extern crate alloc;
 
 use codec_sv2::{Decoded, Decoder, Encoder};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::MessageFrame;
 use std::time::{Duration, Instant};
 
 mod common;
@@ -16,7 +16,7 @@ fn bench_encoder_pool_back_vs_alloc(c: &mut Criterion) {
             let mut total = Duration::ZERO;
             for _ in 0..iters {
                 let mut enc = Encoder::new();
-                let frame = Sv2Frame::from_message(TestMsg { data: 42 }, 0, 0, true).unwrap();
+                let frame = MessageFrame::from_message(TestMsg { data: 42 }, 0, 0, true).unwrap();
                 let t = Instant::now();
                 let _s = enc.encode(black_box(frame)).unwrap();
                 total += t.elapsed();
@@ -32,11 +32,13 @@ fn bench_encoder_pool_back_vs_alloc(c: &mut Criterion) {
                 let mut enc = Encoder::new();
                 let held: Vec<_> = (0u8..8)
                     .map(|i| {
-                        enc.encode(Sv2Frame::from_message(TestMsg { data: i }, 0, 0, true).unwrap())
-                            .unwrap()
+                        enc.encode(
+                            MessageFrame::from_message(TestMsg { data: i }, 0, 0, true).unwrap(),
+                        )
+                        .unwrap()
                     })
                     .collect();
-                let frame = Sv2Frame::from_message(TestMsg { data: 99 }, 0, 0, true).unwrap();
+                let frame = MessageFrame::from_message(TestMsg { data: 99 }, 0, 0, true).unwrap();
                 let t = Instant::now();
                 let _s = enc.encode(black_box(frame)).unwrap();
                 total += t.elapsed();
@@ -54,16 +56,18 @@ fn bench_encoder_pool_back_vs_alloc(c: &mut Criterion) {
                 let mut enc = Encoder::new();
                 let held: Vec<_> = (0u8..8)
                     .map(|i| {
-                        enc.encode(Sv2Frame::from_message(TestMsg { data: i }, 0, 0, true).unwrap())
-                            .unwrap()
+                        enc.encode(
+                            MessageFrame::from_message(TestMsg { data: i }, 0, 0, true).unwrap(),
+                        )
+                        .unwrap()
                     })
                     .collect();
                 let _overflow = enc
-                    .encode(Sv2Frame::from_message(TestMsg { data: 99 }, 0, 0, true).unwrap())
+                    .encode(MessageFrame::from_message(TestMsg { data: 99 }, 0, 0, true).unwrap())
                     .unwrap();
                 drop(_overflow);
                 drop(held);
-                let frame = Sv2Frame::from_message(TestMsg { data: 1 }, 0, 0, true).unwrap();
+                let frame = MessageFrame::from_message(TestMsg { data: 1 }, 0, 0, true).unwrap();
                 let t = Instant::now();
                 let _s = enc.encode(black_box(frame)).unwrap();
                 total += t.elapsed();
@@ -91,14 +95,19 @@ fn bench_encoder_per_slot_latency(c: &mut Criterion) {
                         let pre: Vec<_> = (0..held)
                             .map(|i| {
                                 enc.encode(
-                                    Sv2Frame::from_message(TestMsg { data: i as u8 }, 0, 0, true)
-                                        .unwrap(),
+                                    MessageFrame::from_message(
+                                        TestMsg { data: i as u8 },
+                                        0,
+                                        0,
+                                        true,
+                                    )
+                                    .unwrap(),
                                 )
                                 .unwrap()
                             })
                             .collect();
                         let frame =
-                            Sv2Frame::from_message(TestMsg { data: 42 }, 0, 0, true).unwrap();
+                            MessageFrame::from_message(TestMsg { data: 42 }, 0, 0, true).unwrap();
                         let t = Instant::now();
                         let _s = enc.encode(black_box(frame)).unwrap();
                         total += t.elapsed();
@@ -124,7 +133,7 @@ fn bench_encoder_zc_pool_back_vs_alloc(c: &mut Criterion) {
             for _ in 0..iters {
                 let mut enc = Encoder::new();
                 let msg = ZeroCopyMsgOwned::new_owned(1, coinbase_size);
-                let frame = Sv2Frame::from_message(msg, 0, 0, true).unwrap();
+                let frame = MessageFrame::from_message(msg, 0, 0, true).unwrap();
                 let t = Instant::now();
                 let _s = enc.encode(black_box(frame)).unwrap();
                 total += t.elapsed();
@@ -143,13 +152,13 @@ fn bench_encoder_zc_pool_back_vs_alloc(c: &mut Criterion) {
                 let held: Vec<_> = (0u32..4)
                     .map(|i| {
                         let msg = ZeroCopyMsgOwned::new_owned(i, coinbase_size);
-                        enc.encode(Sv2Frame::from_message(msg, 0, 0, true).unwrap())
+                        enc.encode(MessageFrame::from_message(msg, 0, 0, true).unwrap())
                             .unwrap()
                     })
                     .collect();
                 // 5th encode: byte capacity exceeded → Alloc mode.
                 let msg = ZeroCopyMsgOwned::new_owned(99, coinbase_size);
-                let frame = Sv2Frame::from_message(msg, 0, 0, true).unwrap();
+                let frame = MessageFrame::from_message(msg, 0, 0, true).unwrap();
                 let t = Instant::now();
                 let _s = enc.encode(black_box(frame)).unwrap();
                 total += t.elapsed();
@@ -179,12 +188,12 @@ fn bench_encoder_zc_per_slot_latency(c: &mut Criterion) {
                         let pre: Vec<_> = (0..held)
                             .map(|i| {
                                 let msg = ZeroCopyMsgOwned::new_owned(i as u32, coinbase_size);
-                                enc.encode(Sv2Frame::from_message(msg, 0, 0, true).unwrap())
+                                enc.encode(MessageFrame::from_message(msg, 0, 0, true).unwrap())
                                     .unwrap()
                             })
                             .collect();
                         let msg = ZeroCopyMsgOwned::new_owned(99, coinbase_size);
-                        let frame = Sv2Frame::from_message(msg, 0, 0, true).unwrap();
+                        let frame = MessageFrame::from_message(msg, 0, 0, true).unwrap();
                         let t = Instant::now();
                         let _s = enc.encode(black_box(frame)).unwrap();
                         total += t.elapsed();
@@ -215,8 +224,13 @@ fn bench_encoder_owned_vs_zc_exhaustion(c: &mut Criterion) {
                         let pre: Vec<_> = (0..held)
                             .map(|i| {
                                 enc.encode(
-                                    Sv2Frame::from_message(TestMsg { data: i as u8 }, 0, 0, true)
-                                        .unwrap(),
+                                    MessageFrame::from_message(
+                                        TestMsg { data: i as u8 },
+                                        0,
+                                        0,
+                                        true,
+                                    )
+                                    .unwrap(),
                                 )
                                 .unwrap()
                             })
@@ -224,7 +238,8 @@ fn bench_encoder_owned_vs_zc_exhaustion(c: &mut Criterion) {
                         let t = Instant::now();
                         let _s = enc
                             .encode(
-                                Sv2Frame::from_message(TestMsg { data: 42 }, 0, 0, true).unwrap(),
+                                MessageFrame::from_message(TestMsg { data: 42 }, 0, 0, true)
+                                    .unwrap(),
                             )
                             .unwrap();
                         total += t.elapsed();
@@ -249,14 +264,14 @@ fn bench_encoder_owned_vs_zc_exhaustion(c: &mut Criterion) {
                         let pre: Vec<_> = (0..held)
                             .map(|i| {
                                 let msg = ZeroCopyMsgOwned::new_owned(i as u32, coinbase_size);
-                                enc.encode(Sv2Frame::from_message(msg, 0, 0, true).unwrap())
+                                enc.encode(MessageFrame::from_message(msg, 0, 0, true).unwrap())
                                     .unwrap()
                             })
                             .collect();
                         let msg = ZeroCopyMsgOwned::new_owned(99, coinbase_size);
                         let t = Instant::now();
                         let _s = enc
-                            .encode(Sv2Frame::from_message(msg, 0, 0, true).unwrap())
+                            .encode(MessageFrame::from_message(msg, 0, 0, true).unwrap())
                             .unwrap();
                         total += t.elapsed();
                         drop(_s);
@@ -453,7 +468,7 @@ fn bench_encoder_zc_payload_size_vs_exhaustion(c: &mut Criterion) {
                         let msg = ZeroCopyMsgOwned::new_owned(1, cs);
                         let t = Instant::now();
                         let _s = enc
-                            .encode(Sv2Frame::from_message(msg, 0, 0, true).unwrap())
+                            .encode(MessageFrame::from_message(msg, 0, 0, true).unwrap())
                             .unwrap();
                         total += t.elapsed();
                         drop(_s);
@@ -474,14 +489,14 @@ fn bench_encoder_zc_payload_size_vs_exhaustion(c: &mut Criterion) {
                         let held: Vec<_> = (0..threshold)
                             .map(|i| {
                                 let msg = ZeroCopyMsgOwned::new_owned(i as u32, cs);
-                                enc.encode(Sv2Frame::from_message(msg, 0, 0, true).unwrap())
+                                enc.encode(MessageFrame::from_message(msg, 0, 0, true).unwrap())
                                     .unwrap()
                             })
                             .collect();
                         let msg = ZeroCopyMsgOwned::new_owned(99, cs);
                         let t = Instant::now();
                         let _s = enc
-                            .encode(Sv2Frame::from_message(msg, 0, 0, true).unwrap())
+                            .encode(MessageFrame::from_message(msg, 0, 0, true).unwrap())
                             .unwrap();
                         total += t.elapsed();
                         drop(_s);
@@ -500,7 +515,7 @@ fn bench_encoder_zc_payload_size_vs_exhaustion(c: &mut Criterion) {
 // two groups differ only in payload size, and run the same code.
 fn bench_decoder_exhaustion(c: &mut Criterion) {
     let msg = TestMsg { data: 7u8 };
-    let frame = Sv2Frame::<TestMsg>::from_message(msg, 0, 0, true).unwrap();
+    let frame = MessageFrame::<TestMsg>::from_message(msg, 0, 0, true).unwrap();
     let mut small = vec![0u8; frame.encoded_length()];
     frame.serialize(&mut small).unwrap();
     let large = common::make_encoded_frame(64);

@@ -1,5 +1,5 @@
 #![no_main]
-use codec_sv2::StandardSerializedFrame as StdFrame;
+use codec_sv2::SerializedFrame as StdFrame;
 use framing_sv2::framing::EncodableFrame;
 use libfuzzer_sys::fuzz_target;
 

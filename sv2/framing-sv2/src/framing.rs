@@ -9,12 +9,12 @@
 //!
 //! Frames come in two kinds. Almost all messages passed between Sv2 roles travel in an Sv2 frame,
 //! a [`crate::header::Header`] followed by the serialized message payload:
-//! [`crate::framing::Sv2Frame`] on the way out, holding a message still to be serialized, and
-//! [`crate::framing::SerializedSv2Frame`] on the way in, holding the bytes that were read. The
-//! [`crate::framing::HandshakeFrame`] is used exclusively during the Noise handshake process,
-//! performed between Sv2 roles at the beginning of their communication. This frame is used until
-//! the handshake state progresses to transport mode. After that, all subsequent messages use
-//! [`crate::framing::Sv2Frame`]. No header is included in the handshake frame.
+//! [`crate::framing::MessageFrame`] on the way out, holding a message still to be serialized, and
+//! [`crate::framing::SerializedFrame`] on the way in, holding the bytes that were read. The
+//! [`crate::framing::HandshakeMessage`] is used exclusively during the Noise handshake process,
+//! performed between Sv2 roles at the beginning of their communication. It is used until the
+//! handshake state progresses to transport mode. After that, all subsequent messages use
+//! [`crate::framing::MessageFrame`]. No header is included in the handshake message.
 
 use crate::{header::Header, Error};
 use alloc::vec::Vec;
@@ -52,8 +52,8 @@ impl core::fmt::Display for SizeHint {
 
 /// A frame an encoder can write out, whichever side of the split it comes from.
 ///
-/// Implemented by [`Sv2Frame`], which serializes its message on the way out, and by
-/// [`SerializedSv2Frame`], which already holds the bytes to write. A caller that sometimes has one
+/// Implemented by [`MessageFrame`], which serializes its message on the way out, and by
+/// [`SerializedFrame`], which already holds the bytes to write. A caller that sometimes has one
 /// and sometimes the other can implement this for its own type and hand that to the encoder.
 pub trait EncodableFrame {
     /// Returns the length the frame takes once encoded, which includes the
@@ -66,9 +66,9 @@ pub trait EncodableFrame {
     fn encode_into(self, dst: &mut [u8]) -> Result<(), Error>;
 }
 
-impl<T: Serialize + GetSize> EncodableFrame for Sv2Frame<T> {
+impl<T: Serialize + GetSize> EncodableFrame for MessageFrame<T> {
     fn encoded_length(&self) -> usize {
-        Sv2Frame::encoded_length(self)
+        MessageFrame::encoded_length(self)
     }
 
     fn encode_into(self, dst: &mut [u8]) -> Result<(), Error> {
@@ -76,13 +76,13 @@ impl<T: Serialize + GetSize> EncodableFrame for Sv2Frame<T> {
     }
 }
 
-impl<B: AsMut<[u8]> + AsRef<[u8]>> EncodableFrame for SerializedSv2Frame<B> {
+impl<B: AsMut<[u8]> + AsRef<[u8]>> EncodableFrame for SerializedFrame<B> {
     fn encoded_length(&self) -> usize {
-        SerializedSv2Frame::encoded_length(self)
+        SerializedFrame::encoded_length(self)
     }
 
     fn encode_into(self, dst: &mut [u8]) -> Result<(), Error> {
-        let required = SerializedSv2Frame::encoded_length(&self);
+        let required = SerializedFrame::encoded_length(&self);
         let Some(dst) = dst.get_mut(..required) else {
             return Err(Error::DestinationTooShort {
                 required,
@@ -96,19 +96,19 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> EncodableFrame for SerializedSv2Frame<B> {
 
 /// A frame carrying a message that has not been serialized yet.
 ///
-/// This is the outgoing side of an Sv2 exchange: a message plus the [`Header`] that describes it,
-/// built with [`Sv2Frame::from_message`] and written out with [`Sv2Frame::serialize`]. A frame
-/// read off the wire is a [`SerializedSv2Frame`] instead.
+/// A message plus the [`Header`] that describes it, built with [`MessageFrame::from_message`] and
+/// written out with [`MessageFrame::serialize`]. A frame read off the wire is a
+/// [`SerializedFrame`] instead.
 #[derive(Debug, Clone)]
-pub struct Sv2Frame<T> {
+pub struct MessageFrame<T> {
     header: Header,
     message: T,
 }
 
-impl<T: Serialize + GetSize> Sv2Frame<T> {
-    /// Tries to build a [`Sv2Frame`] from a message.
+impl<T: Serialize + GetSize> MessageFrame<T> {
+    /// Tries to build a [`MessageFrame`] from a message.
     ///
-    /// Returns a [`Sv2Frame`] if the size of the message fits in the frame, [`None`] otherwise.
+    /// Returns a [`MessageFrame`] if the size of the message fits in the frame, [`None`] otherwise.
     pub fn from_message(
         message: T,
         message_type: u8,
@@ -120,7 +120,7 @@ impl<T: Serialize + GetSize> Sv2Frame<T> {
         Header::from_len(len, message_type, extension_type).map(|header| Self { header, message })
     }
 
-    /// Serializes the frame into the first [`Sv2Frame::encoded_length`] bytes of `dst`, erroring
+    /// Serializes the frame into the first [`MessageFrame::encoded_length`] bytes of `dst`, erroring
     /// out if `dst` is shorter than that.
     #[inline]
     pub fn serialize(self, dst: &mut [u8]) -> Result<(), Error> {
@@ -150,17 +150,17 @@ impl<T: Serialize + GetSize> Sv2Frame<T> {
 
 /// A frame carrying the serialized bytes of its header and payload.
 ///
-/// This is the incoming side of an Sv2 exchange: what a decoder hands back once it has read a
-/// whole frame off the wire. Because it is built from those bytes, [`Self::payload`] always has
-/// them.
+/// What a decoder hands back once it has read a whole frame off the wire, and what a role
+/// forwarding one hands an encoder. Because it is built from those bytes, [`Self::payload`]
+/// always has them.
 #[derive(Debug, Clone)]
-pub struct SerializedSv2Frame<B> {
+pub struct SerializedFrame<B> {
     header: Header,
     bytes: B,
 }
 
-impl<B: AsMut<[u8]> + AsRef<[u8]>> SerializedSv2Frame<B> {
-    /// Tries to build a [`SerializedSv2Frame`] from raw bytes, erroring out with the [`SizeHint`]
+impl<B: AsMut<[u8]> + AsRef<[u8]>> SerializedFrame<B> {
+    /// Tries to build a [`SerializedFrame`] from raw bytes, erroring out with the [`SizeHint`]
     /// that describes the mismatch if they do not hold exactly one frame.
     ///
     /// Nothing is assumed or checked about the correctness of the payload.
@@ -170,7 +170,7 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> SerializedSv2Frame<B> {
         Ok(Self::from_parts(header, bytes))
     }
 
-    /// Builds a [`SerializedSv2Frame`] from a [`Header`] already parsed out of `bytes`, so that a
+    /// Builds a [`SerializedFrame`] from a [`Header`] already parsed out of `bytes`, so that a
     /// caller that had to parse one to decide the bytes were complete does not parse it twice.
     #[inline]
     pub fn from_parts(header: Header, bytes: B) -> Self {
@@ -233,25 +233,26 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> SerializedSv2Frame<B> {
     }
 }
 
-/// Abstraction for a Noise handshake frame.
+/// A Noise handshake message.
 ///
-/// Contains only the serialized payload with a fixed length and is only used during Noise
-/// handshake process. Once the handshake is complete, regular Sv2 communication switches to
-/// [`Sv2Frame`] for ongoing communication.
+/// Carries only the serialized payload, of a length fixed by the handshake step that produced it,
+/// and is used only during the Noise handshake: no [`Header`] describes it, so it is not a frame.
+/// Once the handshake completes, communication switches to [`MessageFrame`] and
+/// [`SerializedFrame`].
 #[derive(Debug)]
-pub struct HandshakeFrame {
+pub struct HandshakeMessage {
     payload: Slice,
 }
 
-impl HandshakeFrame {
-    /// Builds a [`HandshakeFrame`] from raw bytes. Nothing is assumed or checked about the
+impl HandshakeMessage {
+    /// Builds a [`HandshakeMessage`] from raw bytes. Nothing is assumed or checked about the
     /// correctness of the payload.
     #[inline]
     pub fn from_bytes(bytes: Slice) -> Self {
         Self { payload: bytes }
     }
 
-    /// Builds a [`HandshakeFrame`] that carries a copy of `message`, the bytes a Noise handshake
+    /// Builds a [`HandshakeMessage`] that carries a copy of `message`, the bytes a Noise handshake
     /// step produced.
     #[allow(clippy::useless_conversion)]
     pub fn from_message<T: AsRef<[u8]>>(message: T) -> Self {
@@ -262,7 +263,7 @@ impl HandshakeFrame {
         }
     }
 
-    /// Returns the payload of the [`HandshakeFrame`].
+    /// Returns the payload of the [`HandshakeMessage`].
     #[inline]
     pub fn payload(&self) -> &[u8] {
         self.payload.as_ref()
@@ -298,16 +299,16 @@ mod tests {
     #[test]
     fn test_parse_header() {
         let hint =
-            SerializedSv2Frame::<Vec<u8>>::parse_header(&[0, 128, 30, 46, 0, 0][..]).unwrap_err();
+            SerializedFrame::<Vec<u8>>::parse_header(&[0, 128, 30, 46, 0, 0][..]).unwrap_err();
         assert_eq!(hint, SizeHint::Missing(46));
     }
 
     #[test]
     fn test_parse_header_empty_payload() {
-        let header = SerializedSv2Frame::<Vec<u8>>::parse_header(&[0, 0, 1, 0, 0, 0][..]).unwrap();
+        let header = SerializedFrame::<Vec<u8>>::parse_header(&[0, 0, 1, 0, 0, 0][..]).unwrap();
         assert_eq!(header.payload_length(), 0);
-        let hint = SerializedSv2Frame::<Vec<u8>>::parse_header(&[0, 0, 1, 0, 0, 0, 9, 9, 9][..])
-            .unwrap_err();
+        let hint =
+            SerializedFrame::<Vec<u8>>::parse_header(&[0, 0, 1, 0, 0, 0, 9, 9, 9][..]).unwrap_err();
         assert_eq!(hint, SizeHint::Surplus(3));
     }
 
@@ -329,7 +330,7 @@ mod tests {
     #[test]
     fn from_message_rejects_a_size_that_does_not_fit_in_a_u32() {
         let msg = HugeMsg((u32::MAX as usize) + 2);
-        assert!(Sv2Frame::<HugeMsg>::from_message(msg, 0x01, 0x0000, false).is_none());
+        assert!(MessageFrame::<HugeMsg>::from_message(msg, 0x01, 0x0000, false).is_none());
     }
 
     #[test]
@@ -337,10 +338,11 @@ mod tests {
         const U24_MAX: usize = 16_777_215;
 
         assert!(
-            Sv2Frame::<HugeMsg>::from_message(HugeMsg(U24_MAX + 1), 0x01, 0x0000, false).is_none()
+            MessageFrame::<HugeMsg>::from_message(HugeMsg(U24_MAX + 1), 0x01, 0x0000, false)
+                .is_none()
         );
 
-        let frame = Sv2Frame::<HugeMsg>::from_message(HugeMsg(U24_MAX), 0x01, 0x0000, false)
+        let frame = MessageFrame::<HugeMsg>::from_message(HugeMsg(U24_MAX), 0x01, 0x0000, false)
             .expect("the largest length the U24 holds is accepted");
         assert_eq!(frame.header().payload_length(), U24_MAX);
     }
@@ -348,7 +350,7 @@ mod tests {
     #[test]
     fn serialized_frame_encode_into_writes_the_frame_it_was_built_from() {
         let bytes = vec![0, 0, 1, 3, 0, 0, 0xaa, 0xbb, 0xcc];
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
         assert_eq!(frame.encoded_length(), bytes.len());
 
         let mut dst = vec![0u8; bytes.len() + 2];
@@ -360,7 +362,7 @@ mod tests {
     #[test]
     fn serialized_frame_encode_into_rejects_a_short_destination() {
         let bytes = vec![0, 0, 1, 3, 0, 0, 0xaa, 0xbb, 0xcc];
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
 
         let mut dst = vec![0u8; bytes.len() - 1];
         assert_eq!(
@@ -403,7 +405,7 @@ mod tests {
         let extension_type = 0x0000u16;
 
         let frame =
-            Sv2Frame::<TestMessage>::from_message(msg.clone(), msg_type, extension_type, false);
+            MessageFrame::<TestMessage>::from_message(msg.clone(), msg_type, extension_type, false);
 
         if msg.get_size() < 16_777_216 {
             assert!(
@@ -444,7 +446,7 @@ mod tests {
         }
 
         let frame =
-            Sv2Frame::<CountingMsg>::from_message(CountingMsg, 0x01, 0x0000, false).unwrap();
+            MessageFrame::<CountingMsg>::from_message(CountingMsg, 0x01, 0x0000, false).unwrap();
         assert_eq!(
             CALLS.load(Ordering::Relaxed),
             1,
@@ -506,7 +508,7 @@ mod tests {
         let extension_type = 0x0000u16;
 
         let frame =
-            Sv2Frame::<TestMessage>::from_message(msg.clone(), msg_type, extension_type, false)
+            MessageFrame::<TestMessage>::from_message(msg.clone(), msg_type, extension_type, false)
                 .unwrap();
 
         let encoded_len = frame.encoded_length();
@@ -532,7 +534,7 @@ mod tests {
         let extension_type = 0x0000u16;
 
         let frame =
-            Sv2Frame::<TestMessage>::from_message(msg.clone(), msg_type, extension_type, false)
+            MessageFrame::<TestMessage>::from_message(msg.clone(), msg_type, extension_type, false)
                 .unwrap();
 
         let mut buffer = vec![0u8; frame.encoded_length()];
@@ -540,8 +542,8 @@ mod tests {
             .serialize(&mut buffer)
             .expect("Serialization should succeed");
 
-        let deserialized = SerializedSv2Frame::<Vec<u8>>::from_bytes(buffer)
-            .expect("Deserialization should succeed");
+        let deserialized =
+            SerializedFrame::<Vec<u8>>::from_bytes(buffer).expect("Deserialization should succeed");
 
         let header = deserialized.header();
         assert_eq!(
@@ -571,7 +573,7 @@ mod tests {
         let mut bytes = vec![0u8; Header::SIZE + msg_length.0 as usize];
         binary_sv2::to_writer(header, &mut bytes[..Header::SIZE]).unwrap();
 
-        let parsed = SerializedSv2Frame::<Vec<u8>>::parse_header(&bytes)
+        let parsed = SerializedFrame::<Vec<u8>>::parse_header(&bytes)
             .expect("parse_header should return the header when bytes hold exactly one frame");
         assert_eq!(parsed.payload_length(), msg_length.0 as usize);
         assert_eq!(parsed.msg_type(), msg_type);
@@ -581,7 +583,7 @@ mod tests {
     fn prop_sv2frame_parse_header_insufficient_header(bytes: Vec<u8>) {
         let bytes: Vec<u8> = bytes.iter().take(Header::SIZE - 1).copied().collect();
 
-        let hint = SerializedSv2Frame::<Vec<u8>>::parse_header(&bytes).unwrap_err();
+        let hint = SerializedFrame::<Vec<u8>>::parse_header(&bytes).unwrap_err();
         assert_eq!(
             hint,
             SizeHint::Missing(Header::SIZE - bytes.len()),
@@ -600,7 +602,7 @@ mod tests {
         }
 
         let frame =
-            Sv2Frame::<TestMessage>::from_message(msg, msg_type, extension_type, channel_msg)
+            MessageFrame::<TestMessage>::from_message(msg, msg_type, extension_type, channel_msg)
                 .unwrap();
 
         let header = frame.header();
@@ -622,12 +624,12 @@ mod tests {
             bytes
         };
 
-        let frame =
-            Sv2Frame::<TestMessage>::from_message(msg, msg_type, extension_type, false).unwrap();
+        let frame = MessageFrame::<TestMessage>::from_message(msg, msg_type, extension_type, false)
+            .unwrap();
         let mut buffer = vec![0u8; frame.encoded_length()];
         frame.serialize(&mut buffer).unwrap();
 
-        let mut frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(buffer).unwrap();
+        let mut frame = SerializedFrame::<Vec<u8>>::from_bytes(buffer).unwrap();
         assert_eq!(frame.payload(), expected_payload.as_mut_slice());
     }
 
@@ -635,7 +637,7 @@ mod tests {
     fn prop_sv2frame_serialize_destination_length(msg: TestMessage, delta: u8) {
         let delta = (delta % 8) as usize + 1;
 
-        let frame = Sv2Frame::<TestMessage>::from_message(msg, 0x01, 0x0000, false).unwrap();
+        let frame = MessageFrame::<TestMessage>::from_message(msg, 0x01, 0x0000, false).unwrap();
         let required = frame.encoded_length();
 
         let mut too_short = vec![0u8; required - delta.min(required)];
@@ -661,52 +663,52 @@ mod tests {
     #[test]
     fn channel_id_is_read_only_when_the_channel_msg_bit_is_set() {
         let mut bytes = vec![0, 0x80, 1, 4, 0, 0, 0x2a, 0x00, 0x00, 0x00];
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
         assert!(frame.header().channel_msg());
         assert_eq!(frame.channel_id(), Some(42));
 
         bytes[1] = 0;
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(bytes).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(bytes).unwrap();
         assert!(!frame.header().channel_msg());
         assert_eq!(frame.channel_id(), None);
 
         let short = vec![0, 0x80, 1, 3, 0, 0, 0x2a, 0x00, 0x00];
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(short).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(short).unwrap();
         assert_eq!(frame.channel_id(), None);
 
         let empty = vec![0, 0x80, 1, 0, 0, 0];
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(empty).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(empty).unwrap();
         assert_eq!(frame.channel_id(), None);
     }
 
     #[test]
     fn from_bytes_rejects_a_short_header() {
         assert_eq!(
-            SerializedSv2Frame::<Vec<u8>>::from_bytes(vec![0, 0, 1, 0, 0]).err(),
+            SerializedFrame::<Vec<u8>>::from_bytes(vec![0, 0, 1, 0, 0]).err(),
             Some(SizeHint::Missing(1))
         );
     }
 
     #[quickcheck]
-    fn prop_handshake_frame_roundtrip(payload: Vec<u8>) {
+    fn prop_handshake_message_roundtrip(payload: Vec<u8>) {
         let payload: Vec<u8> = payload.iter().take(1000).copied().collect();
 
-        let frame = HandshakeFrame::from_message(&payload);
+        let frame = HandshakeMessage::from_message(&payload);
         let recovered = frame.payload();
 
         assert_eq!(
             recovered,
             payload,
-            "HandshakeFrame roundtrip should preserve payload exactly (size: {})",
+            "HandshakeMessage roundtrip should preserve payload exactly (size: {})",
             payload.len()
         );
     }
 
     #[quickcheck]
-    fn prop_handshake_frame_from_bytes(payload: Vec<u8>) {
+    fn prop_handshake_message_from_bytes(payload: Vec<u8>) {
         let payload: Vec<u8> = payload.iter().take(1000).copied().collect();
 
-        let frame = HandshakeFrame::from_bytes(payload.clone().into());
+        let frame = HandshakeMessage::from_bytes(payload.clone().into());
 
         let recovered = frame.payload();
         assert_eq!(
@@ -784,7 +786,7 @@ mod tests {
         let mut bytes = vec![0u8; Header::SIZE + actual_payload];
         binary_sv2::to_writer(header, &mut bytes[..Header::SIZE]).unwrap();
 
-        let hint = SerializedSv2Frame::<Vec<u8>>::parse_header(&bytes).unwrap_err();
+        let hint = SerializedFrame::<Vec<u8>>::parse_header(&bytes).unwrap_err();
 
         assert_eq!(
             hint,
@@ -805,7 +807,7 @@ mod tests {
         let mut bytes = vec![0u8; Header::SIZE + msg_length.0 as usize + extra];
         binary_sv2::to_writer(header, &mut bytes[..Header::SIZE]).unwrap();
 
-        let hint = SerializedSv2Frame::<Vec<u8>>::parse_header(&bytes).unwrap_err();
+        let hint = SerializedFrame::<Vec<u8>>::parse_header(&bytes).unwrap_err();
 
         assert_eq!(
             hint,
@@ -824,7 +826,7 @@ mod tests {
         binary_sv2::to_writer(header, &mut full[..Header::SIZE]).unwrap();
 
         for i in 0..total {
-            let hint = SerializedSv2Frame::<Vec<u8>>::parse_header(&full[..i]).unwrap_err();
+            let hint = SerializedFrame::<Vec<u8>>::parse_header(&full[..i]).unwrap_err();
             let expected = if i < Header::SIZE {
                 SizeHint::Missing(Header::SIZE - i)
             } else {
@@ -833,7 +835,7 @@ mod tests {
             assert_eq!(hint, expected, "hint mismatch with {i} of {total} bytes");
         }
 
-        let parsed = SerializedSv2Frame::<Vec<u8>>::parse_header(&full).unwrap();
+        let parsed = SerializedFrame::<Vec<u8>>::parse_header(&full).unwrap();
         assert_eq!(parsed.payload_length(), payload_len);
     }
 }

@@ -3,7 +3,7 @@ extern crate alloc;
 use binary_sv2;
 use codec_sv2::Decoder;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use framing_sv2::framing::SerializedSv2Frame;
+use framing_sv2::framing::SerializedFrame;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     collections::VecDeque,
@@ -54,7 +54,7 @@ use common::{OwnedMsg, ZeroCopyMsg};
 
 use common::{acquire_frame, make_encoded_frame, Slice};
 
-type DecodedFrame = SerializedSv2Frame<Slice>;
+type DecodedFrame = SerializedFrame<Slice>;
 
 const COINBASE_SIZES: &[usize] = &[16, 64, 256, 1024];
 

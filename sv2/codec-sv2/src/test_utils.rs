@@ -6,7 +6,7 @@
 use crate::{
     decoder::{Decrypted, NoiseDecoder},
     state::Handshake,
-    Buffer, SerializedSv2Frame, TransportDecryptState, TransportEncryptState,
+    Buffer, SerializedFrame, TransportDecryptState, TransportEncryptState,
 };
 use buffer_sv2::Buffer as IsBuffer;
 use core::time::Duration;
@@ -69,7 +69,7 @@ pub(crate) fn decode_noise_frame(
     decoder: &mut NoiseDecoder,
     mut state: TransportDecryptState,
     encoded: &[u8],
-) -> Option<(SerializedSv2Frame<Slice>, TransportDecryptState)> {
+) -> Option<(SerializedFrame, TransportDecryptState)> {
     let mut offset = 0;
     loop {
         let writable = decoder.writable();

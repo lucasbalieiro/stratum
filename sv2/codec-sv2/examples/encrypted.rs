@@ -18,7 +18,7 @@
 
 use binary_sv2::{Deserialize, Serialize};
 #[cfg(feature = "noise_sv2")]
-use codec_sv2::{Decrypted, Handshake, NoiseDecoder, NoiseEncoder, Sv2Frame};
+use codec_sv2::{Decrypted, Handshake, MessageFrame, NoiseDecoder, NoiseEncoder};
 #[cfg(feature = "noise_sv2")]
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 #[cfg(feature = "noise_sv2")]
@@ -169,8 +169,8 @@ fn main() {
     // This message is intended for the receiver, so set to false
     let channel_msg = false;
 
-    let frame: Sv2Frame<CustomMessage> =
-        Sv2Frame::from_message(msg, msg_type, extension_type, channel_msg)
+    let frame: MessageFrame<CustomMessage> =
+        MessageFrame::from_message(msg, msg_type, extension_type, channel_msg)
             .expect("Failed to create the frame");
 
     let mut encoder = NoiseEncoder::new();

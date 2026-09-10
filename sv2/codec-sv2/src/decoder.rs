@@ -27,9 +27,9 @@
 use buffer_sv2::AeadBuffer;
 use buffer_sv2::Buffer as IsBuffer;
 #[cfg(feature = "noise_sv2")]
-use framing_sv2::{framing::HandshakeFrame, SV2_FRAME_HEADER_SIZE};
+use framing_sv2::{framing::HandshakeMessage, SV2_FRAME_HEADER_SIZE};
 use framing_sv2::{
-    framing::{SerializedSv2Frame, SizeHint},
+    framing::{SerializedFrame, SizeHint},
     header::Header,
     SV2_FRAME_CHUNK_SIZE,
 };
@@ -137,13 +137,13 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
     #[inline]
     pub fn next_handshake_frame<R: ExpectsHandshakeMessage>(
         &mut self,
-    ) -> Result<Decoded<HandshakeFrame>> {
+    ) -> Result<Decoded<HandshakeMessage>> {
         if let Some(missing) = self.missing(R::EXPECTED_MESSAGE_SIZE) {
             return Ok(Decoded::Incomplete(missing));
         }
         let message = self.take(R::EXPECTED_MESSAGE_SIZE);
         self.expect(ENCRYPTED_SV2_FRAME_HEADER_SIZE);
-        Ok(Decoded::Frame(HandshakeFrame::from_message(
+        Ok(Decoded::Frame(HandshakeMessage::from_message(
             &message.as_ref()[..R::EXPECTED_MESSAGE_SIZE],
         )))
     }
@@ -205,7 +205,7 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
     pub fn next_transport_frame(
         &mut self,
         mut state: TransportDecryptState,
-    ) -> Result<Decrypted<SerializedSv2Frame<B::Slice>>> {
+    ) -> Result<Decrypted<SerializedFrame<B::Slice>>> {
         match self.next_transport(|buf| state.decrypt(buf))? {
             Decoded::Frame(frame) => Ok(Decrypted::Frame(frame, state)),
             Decoded::Incomplete(n) => Ok(Decrypted::Incomplete(n, state)),
@@ -217,7 +217,7 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
     fn next_transport(
         &mut self,
         decrypt: impl FnMut(&mut B) -> Result<()>,
-    ) -> Result<Decoded<SerializedSv2Frame<B::Slice>>> {
+    ) -> Result<Decoded<SerializedFrame<B::Slice>>> {
         let expected = if IsBuffer::len(&self.sv2_buffer) < SV2_FRAME_HEADER_SIZE {
             ENCRYPTED_SV2_FRAME_HEADER_SIZE
         } else {
@@ -283,7 +283,7 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
         &mut self,
         expected: usize,
         decrypt: impl FnMut(&mut B) -> Result<()>,
-    ) -> Result<Decoded<SerializedSv2Frame<B::Slice>>> {
+    ) -> Result<Decoded<SerializedFrame<B::Slice>>> {
         let result = self.try_decode_noise_frame(expected, decrypt);
 
         if result.is_err() {
@@ -301,7 +301,7 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
         &mut self,
         expected: usize,
         mut decrypt: impl FnMut(&mut B) -> Result<()>,
-    ) -> Result<Decoded<SerializedSv2Frame<B::Slice>>> {
+    ) -> Result<Decoded<SerializedFrame<B::Slice>>> {
         if IsBuffer::len(&self.sv2_buffer) < SV2_FRAME_HEADER_SIZE {
             // HERE THE SV2 HEADER IS READY TO BE DECRYPTED
             let src = self.take(expected);
@@ -332,7 +332,7 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
             }
             self.sv2_buffer.danger_set_start(0);
             let src = self.sv2_buffer.get_data_owned();
-            Ok(Decoded::Frame(SerializedSv2Frame::<B::Slice>::from_bytes(
+            Ok(Decoded::Frame(SerializedFrame::<B::Slice>::from_bytes(
                 src,
             )?))
         }
@@ -393,15 +393,15 @@ impl<B: IsBuffer> WithoutNoise<B> {
     ///
     /// Bytes buffered past the end of the frame are kept as the start of the next one.
     #[inline]
-    pub fn next_frame(&mut self) -> Result<Decoded<SerializedSv2Frame<B::Slice>>> {
+    pub fn next_frame(&mut self) -> Result<Decoded<SerializedFrame<B::Slice>>> {
         let len = self.buffer.len();
         let src = self.buffer.get_data_by_ref(len);
 
-        match SerializedSv2Frame::<B::Slice>::parse_header(src) {
+        match SerializedFrame::<B::Slice>::parse_header(src) {
             Ok(header) => {
                 self.missing_b = Header::SIZE;
                 let src = self.buffer.get_data_owned();
-                Ok(Decoded::Frame(SerializedSv2Frame::<B::Slice>::from_parts(
+                Ok(Decoded::Frame(SerializedFrame::<B::Slice>::from_parts(
                     header, src,
                 )))
             }
@@ -418,7 +418,7 @@ impl<B: IsBuffer> WithoutNoise<B> {
                     .get_writable(carried.len())
                     .copy_from_slice(carried);
                 self.missing_b = Header::SIZE.saturating_sub(carried.len());
-                Ok(Decoded::Frame(SerializedSv2Frame::<B::Slice>::from_bytes(
+                Ok(Decoded::Frame(SerializedFrame::<B::Slice>::from_bytes(
                     frame,
                 )?))
             }
@@ -515,7 +515,7 @@ mod prop_tests {
     use binary_sv2::{Deserialize, Serialize};
     use buffer_sv2::Buffer as IsBuffer;
     use framing_sv2::{
-        framing::{SerializedSv2Frame, Sv2Frame},
+        framing::{MessageFrame, SerializedFrame},
         header::Header,
         SV2_FRAME_CHUNK_SIZE,
     };
@@ -550,7 +550,7 @@ mod prop_tests {
         decoder: &mut Decoder,
         encoded_bytes: &[u8],
         chunk_size: Option<usize>,
-    ) -> Option<SerializedSv2Frame<Slice>> {
+    ) -> Option<SerializedFrame<Slice>> {
         let mut offset = 0;
         while offset < encoded_bytes.len() {
             let writable = decoder.writable();
@@ -577,7 +577,8 @@ mod prop_tests {
     fn prop_encode_decode_roundtrip(msg: TestMessage, msg_type: u8, ext_type: u16) -> TestResult {
         let original_msg = msg.clone();
 
-        let frame = match Sv2Frame::<TestMessage>::from_message(msg, msg_type, ext_type, false) {
+        let frame = match MessageFrame::<TestMessage>::from_message(msg, msg_type, ext_type, false)
+        {
             Some(f) => f,
             None => return TestResult::discard(),
         };
@@ -623,7 +624,7 @@ mod prop_tests {
             return TestResult::discard();
         }
 
-        let frame = match Sv2Frame::<TestMessage>::from_message(msg, msg_type, 0, false) {
+        let frame = match MessageFrame::<TestMessage>::from_message(msg, msg_type, 0, false) {
             Some(f) => f,
             None => return TestResult::discard(),
         };
@@ -669,7 +670,8 @@ mod prop_tests {
         let mut encoder = Encoder::new();
         let mut encode = |value: u16| -> alloc::vec::Vec<u8> {
             let frame =
-                Sv2Frame::<TestMessage>::from_message(TestMessage { value }, 0, 0, false).unwrap();
+                MessageFrame::<TestMessage>::from_message(TestMessage { value }, 0, 0, false)
+                    .unwrap();
             let encoded = encoder.encode(frame).unwrap();
             let encoded: &[u8] = encoded.as_ref();
             encoded.to_vec()
@@ -742,7 +744,8 @@ mod prop_tests {
         let mut encoder = NoiseEncoder::new();
         let mut encrypt = |value: u16| -> alloc::vec::Vec<u8> {
             let frame =
-                Sv2Frame::<TestMessage>::from_message(TestMessage { value }, 0, 0, false).unwrap();
+                MessageFrame::<TestMessage>::from_message(TestMessage { value }, 0, 0, false)
+                    .unwrap();
             let encrypted = encoder.encode_transport(frame, &mut sender).unwrap();
             let encrypted: &[u8] = encrypted.as_ref();
             encrypted.to_vec()
@@ -853,7 +856,8 @@ mod prop_tests {
         let (mut sender, mut receiver) = make_transport_state_pair();
         let mut encoder = NoiseEncoder::new();
         let frame =
-            Sv2Frame::<TestMessage>::from_message(TestMessage { value: 42 }, 0, 0, false).unwrap();
+            MessageFrame::<TestMessage>::from_message(TestMessage { value: 42 }, 0, 0, false)
+                .unwrap();
         let encrypted = encoder.encode_transport(frame, &mut sender).unwrap();
         let encrypted: &[u8] = encrypted.as_ref();
 
@@ -891,7 +895,7 @@ mod prop_tests {
 
         let (mut sender, mut receiver) = make_transport_state_pair();
         let mut encoder = NoiseEncoder::new();
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(plain).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(plain).unwrap();
         let encrypted = encoder.encode_transport(frame, &mut sender).unwrap();
         let encrypted_bytes: &[u8] = encrypted.as_ref();
         let mut encrypted = encrypted_bytes.to_vec();
@@ -1050,7 +1054,7 @@ mod prop_tests {
 
         let (mut sender, mut receiver) = make_transport_state_pair();
         let mut encoder = NoiseEncoder::new();
-        let frame = SerializedSv2Frame::<Vec<u8>>::from_bytes(plain.clone()).unwrap();
+        let frame = SerializedFrame::<Vec<u8>>::from_bytes(plain.clone()).unwrap();
         let encrypted = encoder.encode_transport(frame, &mut sender).unwrap();
         let encrypted: &[u8] = encrypted.as_ref();
 
@@ -1085,14 +1089,16 @@ mod prop_tests {
         msg2: TestMessage,
         msg_type: u8,
     ) -> TestResult {
-        let frame1 = match Sv2Frame::<TestMessage>::from_message(msg1.clone(), msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
-        };
-        let frame2 = match Sv2Frame::<TestMessage>::from_message(msg2.clone(), msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
-        };
+        let frame1 =
+            match MessageFrame::<TestMessage>::from_message(msg1.clone(), msg_type, 0, false) {
+                Some(f) => f,
+                None => return TestResult::discard(),
+            };
+        let frame2 =
+            match MessageFrame::<TestMessage>::from_message(msg2.clone(), msg_type, 0, false) {
+                Some(f) => f,
+                None => return TestResult::discard(),
+            };
 
         let mut encoder = Encoder::new();
         let encoded1 = match encoder.encode(frame1) {
@@ -1136,11 +1142,11 @@ mod prop_tests {
         let (mut sender_state, receiver_state) = make_transport_state_pair();
         let original = msg.clone();
 
-        let sv2_frame = match Sv2Frame::<TestMessage>::from_message(msg, msg_type, ext_type, false)
-        {
-            Some(f) => f,
-            None => return TestResult::discard(),
-        };
+        let sv2_frame =
+            match MessageFrame::<TestMessage>::from_message(msg, msg_type, ext_type, false) {
+                Some(f) => f,
+                None => return TestResult::discard(),
+            };
         let expected_ext = sv2_frame.header().ext_type();
 
         let mut encoder = NoiseEncoder::new();
@@ -1174,7 +1180,7 @@ mod prop_tests {
     #[cfg(feature = "noise_sv2")]
     #[quickcheck]
     fn prop_noise_decoder_handles_partial_data(msg: TestMessage, msg_type: u8) -> TestResult {
-        let frame = match Sv2Frame::<TestMessage>::from_message(msg, msg_type, 0, false) {
+        let frame = match MessageFrame::<TestMessage>::from_message(msg, msg_type, 0, false) {
             Some(f) => f,
             None => return TestResult::discard(),
         };
@@ -1216,7 +1222,8 @@ mod prop_tests {
     fn noise_decoder_recovers_from_a_failed_decryption() {
         let (mut sender_state, receiver_state) = make_transport_state_pair();
         let frame =
-            Sv2Frame::<TestMessage>::from_message(TestMessage { value: 7 }, 0, 0, false).unwrap();
+            MessageFrame::<TestMessage>::from_message(TestMessage { value: 7 }, 0, 0, false)
+                .unwrap();
         let mut encoder = NoiseEncoder::new();
         let encrypted = encoder.encode_transport(frame, &mut sender_state).unwrap();
         let encrypted: &[u8] = encrypted.as_ref();
@@ -1262,14 +1269,16 @@ mod prop_tests {
     ) -> TestResult {
         let (mut sender_state, receiver_state) = make_transport_state_pair();
 
-        let frame1 = match Sv2Frame::<TestMessage>::from_message(msg1.clone(), msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
-        };
-        let frame2 = match Sv2Frame::<TestMessage>::from_message(msg2.clone(), msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
-        };
+        let frame1 =
+            match MessageFrame::<TestMessage>::from_message(msg1.clone(), msg_type, 0, false) {
+                Some(f) => f,
+                None => return TestResult::discard(),
+            };
+        let frame2 =
+            match MessageFrame::<TestMessage>::from_message(msg2.clone(), msg_type, 0, false) {
+                Some(f) => f,
+                None => return TestResult::discard(),
+            };
 
         let mut encoder = NoiseEncoder::new();
 
