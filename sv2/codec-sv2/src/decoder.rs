@@ -88,6 +88,7 @@ pub enum Decoded<F> {
     ///
     /// Carries the number of bytes the decoder will accept on the next read, which is always
     /// `writable_len` and never more than one chunk, not the number of bytes left in the frame.
+    /// Zero means the bytes are already buffered: call again without reading.
     Incomplete(usize),
 }
 
@@ -104,7 +105,8 @@ pub enum Decrypted<F> {
     ///
     /// Carries the number of bytes the decoder will accept on the next read, which is always
     /// [`WithNoise::writable_len`] and never more than one chunk, not the number of bytes left in
-    /// the frame, along with the state to call again with.
+    /// the frame, along with the state to call again with. Zero means the bytes are already
+    /// buffered: call again without reading.
     Incomplete(usize, TransportDecryptState),
 }
 
@@ -310,32 +312,47 @@ impl<B: IsBuffer + AeadBuffer> WithNoise<B> {
             decrypt(&mut self.sv2_buffer)?;
             let header =
                 Header::from_bytes(self.sv2_buffer.get_data_by_ref(SV2_FRAME_HEADER_SIZE))?;
-            self.expect(crate::encrypted_payload_length(&header));
-            Ok(Decoded::Incomplete(self.writable_len()))
-        } else {
-            // HERE THE SV2 PAYLOAD IS READY TO BE DECRYPTED
-            // DECRYPT THE PAYLOAD IN CHUNKS
-            let encrypted_payload = self.take(expected);
-            self.expect(ENCRYPTED_SV2_FRAME_HEADER_SIZE);
-            let encrypted_payload = &encrypted_payload.as_ref()[..expected];
-            let mut start = 0;
-            // Do not try to decrypt the header cause it is already decrypted
-            let mut decrypted_len = SV2_FRAME_HEADER_SIZE;
-            while start < expected {
-                let end = (start + SV2_FRAME_CHUNK_SIZE).min(expected);
-                let decrypted_payload = self.sv2_buffer.get_writable(end - start);
-                decrypted_payload.copy_from_slice(&encrypted_payload[start..end]);
-                self.sv2_buffer.danger_set_start(decrypted_len);
-                decrypt(&mut self.sv2_buffer)?;
-                start = end;
-                decrypted_len += self.sv2_buffer.as_ref().len();
+            let payload = crate::encrypted_payload_length(&header);
+            if payload > 0 {
+                self.expect(payload);
+                return Ok(Decoded::Incomplete(self.writable_len()));
             }
-            self.sv2_buffer.danger_set_start(0);
-            let src = self.sv2_buffer.get_data_owned();
-            Ok(Decoded::Frame(SerializedFrame::<B::Slice>::from_bytes(
-                src,
-            )?))
+            // A frame that declares no payload is already whole, so return it in this same round
+            // rather than handing the caller a zero-length read window to come back through.
+            self.decrypt_payload(0, decrypt)
+        } else {
+            self.decrypt_payload(expected, decrypt)
         }
+    }
+
+    // Decrypts `expected` bytes of payload, chunk by chunk, onto the header already decrypted in
+    // `sv2_buffer`, and returns the frame the two make up.
+    #[inline]
+    fn decrypt_payload(
+        &mut self,
+        expected: usize,
+        mut decrypt: impl FnMut(&mut B) -> Result<()>,
+    ) -> Result<Decoded<SerializedFrame<B::Slice>>> {
+        let encrypted_payload = self.take(expected);
+        self.expect(ENCRYPTED_SV2_FRAME_HEADER_SIZE);
+        let encrypted_payload = &encrypted_payload.as_ref()[..expected];
+        let mut start = 0;
+        // Do not try to decrypt the header cause it is already decrypted
+        let mut decrypted_len = SV2_FRAME_HEADER_SIZE;
+        while start < expected {
+            let end = (start + SV2_FRAME_CHUNK_SIZE).min(expected);
+            let decrypted_payload = self.sv2_buffer.get_writable(end - start);
+            decrypted_payload.copy_from_slice(&encrypted_payload[start..end]);
+            self.sv2_buffer.danger_set_start(decrypted_len);
+            decrypt(&mut self.sv2_buffer)?;
+            start = end;
+            decrypted_len += self.sv2_buffer.as_ref().len();
+        }
+        self.sv2_buffer.danger_set_start(0);
+        let src = self.sv2_buffer.get_data_owned();
+        Ok(Decoded::Frame(SerializedFrame::<B::Slice>::from_bytes(
+            src,
+        )?))
     }
 }
 
@@ -537,6 +554,10 @@ mod prop_tests {
     struct TestMessage {
         value: u16,
     }
+
+    #[cfg(feature = "noise_sv2")]
+    #[derive(Serialize)]
+    struct EmptyMessage {}
 
     impl Arbitrary for TestMessage {
         fn arbitrary(g: &mut Gen) -> Self {
@@ -793,6 +814,34 @@ mod prop_tests {
             TestMessage { value: 2 }
         );
         assert_eq!(decoder.writable_len(), ENCRYPTED_SV2_FRAME_HEADER_SIZE);
+    }
+    /// A frame that declares no payload is whole as soon as its header is decrypted, so it comes
+    /// back in that same round rather than through a zero-length read window a caller reading
+    /// into `writable` would take for EOF.
+    #[cfg(feature = "noise_sv2")]
+    #[test]
+    fn a_frame_with_no_payload_is_returned_without_a_further_read() {
+        let (mut sender, receiver) = make_transport_state_pair();
+        let frame =
+            MessageFrame::<EmptyMessage>::from_message(EmptyMessage {}, 0xaa, 0, false).unwrap();
+        assert_eq!(frame.header().payload_length(), 0);
+
+        let mut encoder = crate::NoiseEncoder::new();
+        let encoded = encoder.encode_transport(frame, &mut sender).unwrap();
+        let encoded: Vec<u8> = AsRef::<[u8]>::as_ref(&encoded).to_vec();
+        assert_eq!(encoded.len(), crate::ENCRYPTED_SV2_FRAME_HEADER_SIZE);
+
+        let mut decoder = NoiseDecoder::new();
+        decoder.writable().copy_from_slice(&encoded);
+        let Ok(Decrypted::Frame(frame, _)) = decoder.next_transport_frame(receiver) else {
+            panic!("expected the frame in the same round as its header");
+        };
+        assert_eq!(frame.header().payload_length(), 0);
+        assert_eq!(frame.as_bytes().len(), Header::SIZE);
+        assert_eq!(
+            decoder.writable_len(),
+            crate::ENCRYPTED_SV2_FRAME_HEADER_SIZE
+        );
     }
 
     /// A caller that sizes its read from `writable` before calling `next_` — the shape both
