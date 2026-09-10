@@ -167,6 +167,7 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> SerializedFrame<B> {
     /// caller that had to parse one to decide the bytes were complete does not parse it twice.
     #[inline]
     pub fn from_parts(header: Header, bytes: B) -> Self {
+        debug_assert_eq!(Header::SIZE + header.payload_length(), bytes.as_ref().len());
         Self { header, bytes }
     }
 
