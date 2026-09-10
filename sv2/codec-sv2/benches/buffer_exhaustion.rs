@@ -2,7 +2,7 @@ extern crate alloc;
 
 use codec_sv2::{Decoded, Decoder, Encoder};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use framing_sv2::framing::MessageFrame;
+use framing_sv2::framing::{EncodableFrame, MessageFrame};
 use std::time::{Duration, Instant};
 
 mod common;
@@ -517,7 +517,7 @@ fn bench_decoder_exhaustion(c: &mut Criterion) {
     let msg = TestMsg { data: 7u8 };
     let frame = MessageFrame::<TestMsg>::from_message(msg, 0, 0, true).unwrap();
     let mut small = vec![0u8; frame.encoded_length()];
-    frame.serialize(&mut small).unwrap();
+    frame.encode_into(&mut small).unwrap();
     let large = common::make_encoded_frame(64);
 
     bench_decoder_pool_back_vs_alloc(

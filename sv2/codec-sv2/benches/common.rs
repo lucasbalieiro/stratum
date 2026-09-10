@@ -108,12 +108,12 @@ pub type Slice = Vec<u8>;
 /// One encoded frame carrying a `ZeroCopyMsgOwned` with a coinbase of the given size.
 #[allow(dead_code)]
 pub fn make_encoded_frame(coinbase_size: usize) -> Vec<u8> {
-    use framing_sv2::framing::MessageFrame;
+    use framing_sv2::framing::{EncodableFrame, MessageFrame};
 
     let msg = ZeroCopyMsgOwned::new_owned(1, coinbase_size);
     let frame = MessageFrame::<ZeroCopyMsgOwned>::from_message(msg, 0, 0, true).unwrap();
     let mut buf = vec![0u8; frame.encoded_length()];
-    frame.serialize(&mut buf).unwrap();
+    frame.encode_into(&mut buf).unwrap();
     buf
 }
 

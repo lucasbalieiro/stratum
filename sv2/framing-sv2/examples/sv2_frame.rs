@@ -18,7 +18,7 @@
 // ```
 
 use binary_sv2::{Deserialize, Serialize};
-use framing_sv2::framing::{MessageFrame, SerializedFrame};
+use framing_sv2::framing::{EncodableFrame, MessageFrame, SerializedFrame};
 use std::convert::TryInto;
 
 // Example message type (e.g., SetupConnection)
@@ -43,7 +43,7 @@ fn main() {
     // Serialize the frame into a byte array for transmission
     let mut serialized_frame = vec![0u8; frame.encoded_length()];
     frame
-        .serialize(&mut serialized_frame)
+        .encode_into(&mut serialized_frame)
         .expect("Failed to serialize the frame");
 
     // Deserialize the frame from bytes back into an MessageFrame

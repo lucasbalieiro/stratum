@@ -2659,7 +2659,7 @@ mod test {
     use alloc::vec;
     use alloc::vec::Vec;
     use binary_sv2::{Seq0255, Seq064K, Str0255, Sv2Option, B0255, B032, B064K, U256};
-    use codec_sv2::MessageFrame;
+    use codec_sv2::{EncodableFrame, MessageFrame};
     use core::convert::{TryFrom, TryInto};
     use extensions_sv2::{RequestExtensions, EXTENSION_TYPE_EXTENSIONS_NEGOTIATION};
     use job_declaration_sv2::PushSolution;
@@ -2683,7 +2683,7 @@ mod test {
         let frame = StdFrame::try_from(extensions_message).unwrap();
         let mut buffer = [0; 0xffff];
         let encoded_length = frame.encoded_length();
-        frame.serialize(&mut buffer).unwrap();
+        frame.encode_into(&mut buffer).unwrap();
 
         // Verify extension_type is 1 (0x0001)
         let extension_type = extract_extension_type(&buffer[..encoded_length]);
@@ -2756,7 +2756,7 @@ mod test {
             let frame = StdFrame::try_from(AnyMessage::Mining(message)).unwrap();
             let mut buffer = [0; 0xffff];
             let encoded_frame_length = frame.encoded_length();
-            frame.serialize(&mut buffer).unwrap();
+            frame.encode_into(&mut buffer).unwrap();
 
             assert!(
                 is_channel_msg(&buffer[..encoded_frame_length]),
@@ -2794,7 +2794,7 @@ mod test {
         let encoded_frame_length = frame.encoded_length();
 
         let mut buffer = [0; 0xffff];
-        frame.serialize(&mut buffer).unwrap();
+        frame.encode_into(&mut buffer).unwrap();
         check_length_consistency(&buffer[..encoded_frame_length]);
         check_length_consistency(expected_result);
         assert_eq!(

@@ -72,7 +72,16 @@ impl<T: Serialize + GetSize> EncodableFrame for MessageFrame<T> {
     }
 
     fn encode_into(self, dst: &mut [u8]) -> Result<(), Error> {
-        self.serialize(dst)
+        let required = MessageFrame::encoded_length(&self);
+        let Some(dst) = dst.get_mut(..required) else {
+            return Err(Error::DestinationTooShort {
+                required,
+                actual: dst.len(),
+            });
+        };
+        self.header.write_into(dst)?;
+        to_writer(self.message, &mut dst[Header::SIZE..]).map_err(Error::BinarySv2Error)?;
+        Ok(())
     }
 }
 
@@ -97,7 +106,7 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> EncodableFrame for SerializedFrame<B> {
 /// A frame carrying a message that has not been serialized yet.
 ///
 /// A message plus the [`Header`] that describes it, built with [`MessageFrame::from_message`] and
-/// written out with [`MessageFrame::serialize`]. A frame read off the wire is a
+/// written out with [`EncodableFrame::encode_into`]. A frame read off the wire is a
 /// [`SerializedFrame`] instead.
 #[derive(Debug, Clone)]
 pub struct MessageFrame<T> {
@@ -118,22 +127,6 @@ impl<T: Serialize + GetSize> MessageFrame<T> {
         let extension_type = update_extension_type(extension_type, channel_msg);
         let len = u32::try_from(message.get_size()).ok()?;
         Header::from_len(len, message_type, extension_type).map(|header| Self { header, message })
-    }
-
-    /// Serializes the frame into the first [`MessageFrame::encoded_length`] bytes of `dst`, erroring
-    /// out if `dst` is shorter than that.
-    #[inline]
-    pub fn serialize(self, dst: &mut [u8]) -> Result<(), Error> {
-        let required = self.encoded_length();
-        let Some(dst) = dst.get_mut(..required) else {
-            return Err(Error::DestinationTooShort {
-                required,
-                actual: dst.len(),
-            });
-        };
-        self.header.write_into(dst)?;
-        to_writer(self.message, &mut dst[Header::SIZE..]).map_err(Error::BinarySv2Error)?;
-        Ok(())
     }
 
     /// Returns the [`Header`] of the frame.
@@ -462,7 +455,7 @@ mod tests {
         );
 
         let mut dst = vec![0u8; len];
-        frame.serialize(&mut dst).unwrap();
+        frame.encode_into(&mut dst).unwrap();
         assert_eq!(
             CALLS.load(Ordering::Relaxed),
             1,
@@ -539,7 +532,7 @@ mod tests {
 
         let mut buffer = vec![0u8; frame.encoded_length()];
         frame
-            .serialize(&mut buffer)
+            .encode_into(&mut buffer)
             .expect("Serialization should succeed");
 
         let deserialized =
@@ -627,14 +620,14 @@ mod tests {
         let frame = MessageFrame::<TestMessage>::from_message(msg, msg_type, extension_type, false)
             .unwrap();
         let mut buffer = vec![0u8; frame.encoded_length()];
-        frame.serialize(&mut buffer).unwrap();
+        frame.encode_into(&mut buffer).unwrap();
 
         let mut frame = SerializedFrame::<Vec<u8>>::from_bytes(buffer).unwrap();
         assert_eq!(frame.payload(), expected_payload.as_mut_slice());
     }
 
     #[quickcheck]
-    fn prop_sv2frame_serialize_destination_length(msg: TestMessage, delta: u8) {
+    fn prop_message_frame_encode_into_destination_length(msg: TestMessage, delta: u8) {
         let delta = (delta % 8) as usize + 1;
 
         let frame = MessageFrame::<TestMessage>::from_message(msg, 0x01, 0x0000, false).unwrap();
@@ -643,15 +636,15 @@ mod tests {
         let mut too_short = vec![0u8; required - delta.min(required)];
         let actual = too_short.len();
         assert_eq!(
-            frame.clone().serialize(&mut too_short),
+            frame.clone().encode_into(&mut too_short),
             Err(Error::DestinationTooShort { required, actual })
         );
 
         let mut oversized = vec![0u8; required + delta];
-        assert!(frame.clone().serialize(&mut oversized).is_ok());
+        assert!(frame.clone().encode_into(&mut oversized).is_ok());
 
         let mut exact = vec![0u8; required];
-        assert!(frame.serialize(&mut exact).is_ok());
+        assert!(frame.encode_into(&mut exact).is_ok());
         assert_eq!(
             &oversized[..required],
             &exact[..],

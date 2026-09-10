@@ -11,7 +11,8 @@ pub enum Error {
     /// Binary Sv2 data format error.
     BinarySv2Error(binary_sv2::Error),
 
-    /// The buffer passed to [`crate::framing::MessageFrame::serialize`] is shorter than the frame.
+    /// The buffer passed to [`crate::framing::EncodableFrame::encode_into`] is shorter than the
+    /// frame.
     DestinationTooShort {
         /// Length the encoded frame needs.
         required: usize,

@@ -60,7 +60,7 @@ Requires `noise_sv2` feature.
 - **`serialization/frame_from_message`** — `MessageFrame::from_message()`: builds the header and
   holds the message, no serialization yet
 - **`serialization/frame_serialization_roundtrip`** — `from_message()` followed by
-  `serialize()` into a caller-provided buffer
+  `encode_into()` into a caller-provided buffer
 
 ### 5. Buffer Pool Exhaustion (`buffer_exhaustion.rs`)
 
