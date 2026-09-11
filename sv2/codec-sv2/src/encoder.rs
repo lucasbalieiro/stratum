@@ -247,8 +247,8 @@ mod tests {
         }
 
         fn encode_into(self, _dst: &mut [u8]) -> core::result::Result<(), framing_sv2::Error> {
-            Err(framing_sv2::Error::DestinationTooShort {
-                required: 10,
+            Err(framing_sv2::Error::UnexpectedDestinationLength {
+                expected: 10,
                 actual: 0,
             })
         }

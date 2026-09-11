@@ -11,11 +11,11 @@ pub enum Error {
     /// Binary Sv2 data format error.
     BinarySv2Error(binary_sv2::Error),
 
-    /// The buffer passed to [`crate::framing::EncodableFrame::encode_into`] is shorter than the
-    /// frame.
-    DestinationTooShort {
-        /// Length the encoded frame needs.
-        required: usize,
+    /// The buffer passed to [`crate::framing::EncodableFrame::encode_into`] is not exactly as
+    /// long as the frame.
+    UnexpectedDestinationLength {
+        /// Length the encoded frame takes.
+        expected: usize,
         /// Length of the buffer that was passed.
         actual: usize,
     },
@@ -31,10 +31,10 @@ impl fmt::Display for Error {
             BinarySv2Error(ref e) => {
                 write!(f, "BinarySv2Error: `{e}`")
             }
-            DestinationTooShort { required, actual } => {
+            UnexpectedDestinationLength { expected, actual } => {
                 write!(
                     f,
-                    "Destination buffer is `{actual}` bytes long, the encoded frame needs `{required}`"
+                    "Destination buffer is `{actual}` bytes long, the encoded frame takes `{expected}`"
                 )
             }
             UnexpectedHeaderLength(actual_size) => {

@@ -2683,7 +2683,7 @@ mod test {
         let frame = StdFrame::try_from(extensions_message).unwrap();
         let mut buffer = [0; 0xffff];
         let encoded_length = frame.encoded_length();
-        frame.encode_into(&mut buffer).unwrap();
+        frame.encode_into(&mut buffer[..encoded_length]).unwrap();
 
         // Verify extension_type is 1 (0x0001)
         let extension_type = extract_extension_type(&buffer[..encoded_length]);
@@ -2756,7 +2756,9 @@ mod test {
             let frame = StdFrame::try_from(AnyMessage::Mining(message)).unwrap();
             let mut buffer = [0; 0xffff];
             let encoded_frame_length = frame.encoded_length();
-            frame.encode_into(&mut buffer).unwrap();
+            frame
+                .encode_into(&mut buffer[..encoded_frame_length])
+                .unwrap();
 
             assert!(
                 is_channel_msg(&buffer[..encoded_frame_length]),
@@ -2794,7 +2796,9 @@ mod test {
         let encoded_frame_length = frame.encoded_length();
 
         let mut buffer = [0; 0xffff];
-        frame.encode_into(&mut buffer).unwrap();
+        frame
+            .encode_into(&mut buffer[..encoded_frame_length])
+            .unwrap();
         check_length_consistency(&buffer[..encoded_frame_length]);
         check_length_consistency(expected_result);
         assert_eq!(

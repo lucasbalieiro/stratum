@@ -61,8 +61,9 @@ pub trait EncodableFrame {
     /// encoder rejects a frame that reports less than that.
     fn encoded_length(&self) -> usize;
 
-    /// Writes the frame into the first [`Self::encoded_length`] bytes of `dst`, erroring out if
-    /// `dst` is shorter than that.
+    /// Writes the frame into `dst`, erroring out unless `dst` is exactly [`Self::encoded_length`]
+    /// long. A longer `dst` is refused rather than left with whatever it held past the frame,
+    /// which a caller that sends the whole buffer would send along.
     fn encode_into(self, dst: &mut [u8]) -> Result<(), Error>;
 }
 
@@ -72,13 +73,13 @@ impl<T: Serialize + GetSize> EncodableFrame for MessageFrame<T> {
     }
 
     fn encode_into(self, dst: &mut [u8]) -> Result<(), Error> {
-        let required = MessageFrame::encoded_length(&self);
-        let Some(dst) = dst.get_mut(..required) else {
-            return Err(Error::DestinationTooShort {
-                required,
+        let expected = MessageFrame::encoded_length(&self);
+        if dst.len() != expected {
+            return Err(Error::UnexpectedDestinationLength {
+                expected,
                 actual: dst.len(),
             });
-        };
+        }
         self.header.write_into(dst)?;
         to_writer(self.message, &mut dst[Header::SIZE..]).map_err(Error::BinarySv2Error)?;
         Ok(())
@@ -91,13 +92,13 @@ impl<B: AsMut<[u8]> + AsRef<[u8]>> EncodableFrame for SerializedFrame<B> {
     }
 
     fn encode_into(self, dst: &mut [u8]) -> Result<(), Error> {
-        let required = SerializedFrame::encoded_length(&self);
-        let Some(dst) = dst.get_mut(..required) else {
-            return Err(Error::DestinationTooShort {
-                required,
+        let expected = SerializedFrame::encoded_length(&self);
+        if dst.len() != expected {
+            return Err(Error::UnexpectedDestinationLength {
+                expected,
                 actual: dst.len(),
             });
-        };
+        }
         dst.copy_from_slice(self.as_bytes());
         Ok(())
     }
@@ -347,26 +348,27 @@ mod tests {
         let frame = SerializedFrame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
         assert_eq!(frame.encoded_length(), bytes.len());
 
-        let mut dst = vec![0u8; bytes.len() + 2];
+        let mut dst = vec![0u8; bytes.len()];
         frame.encode_into(&mut dst).unwrap();
-        assert_eq!(&dst[..bytes.len()], &bytes[..]);
-        assert_eq!(&dst[bytes.len()..], &[0, 0]);
+        assert_eq!(dst, bytes);
     }
 
     #[test]
-    fn serialized_frame_encode_into_rejects_a_short_destination() {
+    fn serialized_frame_encode_into_rejects_a_destination_of_another_length() {
         let bytes = vec![0, 0, 1, 3, 0, 0, 0xaa, 0xbb, 0xcc];
-        let frame = SerializedFrame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
 
-        let mut dst = vec![0u8; bytes.len() - 1];
-        assert_eq!(
-            frame.encode_into(&mut dst),
-            Err(Error::DestinationTooShort {
-                required: bytes.len(),
-                actual: bytes.len() - 1,
-            })
-        );
-        assert!(dst.iter().all(|b| *b == 0));
+        for actual in [bytes.len() - 1, bytes.len() + 1] {
+            let frame = SerializedFrame::<Vec<u8>>::from_bytes(bytes.clone()).unwrap();
+            let mut dst = vec![0u8; actual];
+            assert_eq!(
+                frame.encode_into(&mut dst),
+                Err(Error::UnexpectedDestinationLength {
+                    expected: bytes.len(),
+                    actual,
+                })
+            );
+            assert!(dst.iter().all(|b| *b == 0));
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -638,18 +640,29 @@ mod tests {
         let actual = too_short.len();
         assert_eq!(
             frame.clone().encode_into(&mut too_short),
-            Err(Error::DestinationTooShort { required, actual })
+            Err(Error::UnexpectedDestinationLength {
+                expected: required,
+                actual
+            })
         );
 
         let mut oversized = vec![0u8; required + delta];
-        assert!(frame.clone().encode_into(&mut oversized).is_ok());
+        assert_eq!(
+            frame.clone().encode_into(&mut oversized),
+            Err(Error::UnexpectedDestinationLength {
+                expected: required,
+                actual: required + delta
+            })
+        );
+        assert!(oversized.iter().all(|b| *b == 0));
 
         let mut exact = vec![0u8; required];
         assert!(frame.encode_into(&mut exact).is_ok());
         assert_eq!(
-            &oversized[..required],
-            &exact[..],
-            "the frame goes into the first bytes of the buffer"
+            SerializedFrame::<Vec<u8>>::from_bytes(exact)
+                .unwrap()
+                .encoded_length(),
+            required
         );
     }
 
