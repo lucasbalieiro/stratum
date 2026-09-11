@@ -748,6 +748,91 @@ mod test_to_writer_len {
     }
 }
 
+mod test_fixed_size_hint_overflow {
+    use super::*;
+
+    struct HugeFixed;
+
+    impl Fixed for HugeFixed {
+        const SIZE: usize = usize::MAX;
+    }
+
+    #[test]
+    fn unrepresentable_fixed_end_offset_does_not_wrap() {
+        let data = [0u8; 1];
+        match <HugeFixed as SizeHint>::size_hint(&data, data.len()) {
+            Err(Error::ReadError(actual, required)) => assert!(required >= actual),
+            other => panic!("expected ReadError, got {other:?}"),
+        }
+    }
+}
+
+mod test_deep_encodable_field {
+    use super::*;
+    use binary_sv2::encodable::EncodablePrimitive;
+
+    fn nested(depth: usize) -> EncodableField<'static> {
+        let mut field = EncodableField::Primitive(EncodablePrimitive::U8(0x5a));
+        for _ in 0..depth {
+            field = EncodableField::Struct(vec![field]);
+        }
+        field
+    }
+
+    #[test]
+    fn deeply_nested_field_encodes_sizes_and_drops_without_recursion() {
+        let field = nested(100_000);
+        let mut dst = [0u8; 1];
+
+        assert_eq!(field.get_size(), 1);
+        assert_eq!(field.encode(&mut dst, 0), Ok(1));
+        assert_eq!(dst, [0x5a]);
+        drop(field);
+    }
+
+    #[test]
+    fn encode_reports_offset_past_buffer_end() {
+        let field = EncodableField::Struct(vec![
+            EncodableField::Primitive(EncodablePrimitive::U8(1)),
+            EncodableField::Primitive(EncodablePrimitive::U8(2)),
+        ]);
+        let mut dst = [0u8; 1];
+
+        assert_eq!(field.encode(&mut dst, 0), Err(Error::WriteError(1, 0)));
+        assert_eq!(field.encode(&mut dst, 2), Err(Error::WriteError(2, 1)));
+
+        let empty = EncodableField::Struct(vec![]);
+        assert_eq!(empty.encode(&mut dst, 1), Ok(0));
+        assert_eq!(empty.encode(&mut dst, 2), Err(Error::WriteError(2, 1)));
+    }
+}
+
+mod test_seq_decode_ast {
+    use super::*;
+    use binary_sv2::decodable::FieldMarker;
+
+    #[derive(Deserialize)]
+    struct ExtensionRequest<'decoder> {
+        request_id: u16,
+        requested_extensions: Seq064K<'decoder, u16>,
+    }
+
+    #[test]
+    fn nested_seq064k_is_not_expanded_into_per_element_markers() {
+        let count = u16::MAX as usize;
+        let mut bytes = vec![0_u8; 2 + 2 + count * 2];
+        bytes[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        let structure = ExtensionRequest::get_structure(&bytes).unwrap();
+        assert_eq!(structure.len(), 2);
+        assert!(matches!(structure[1], FieldMarker::Raw(size) if size == bytes.len() - 2));
+
+        let decoded: ExtensionRequest = from_bytes(&mut bytes).unwrap();
+        assert_eq!(decoded.request_id, 0);
+        assert_eq!(decoded.requested_extensions.len(), count);
+    }
+}
+
 mod test_owned_visibility {
     macro_rules! define_plain {
         ($struct_vis:vis $name:ident, $field_vis:vis $field:ident) => {

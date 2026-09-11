@@ -186,7 +186,7 @@ pub mod encodable {
 extern crate alloc;
 
 /// Error types used within the protocol library to indicate various failure conditions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum Error {
     /// Indicates an attempt to read beyond a valid range.
     OutOfBound,
@@ -236,19 +236,51 @@ pub enum Error {
     Sv2OptionHaveMoreThenOneElement(u8),
 }
 
-impl core::fmt::Display for Error {
+impl core::fmt::Debug for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            // Keep the diagnostic sample out of formatted output; the scalar fields already
-            // describe the violation.
-            Error::ValueExceedsMaxSize(is_fixed, size, header_size, max_size, _, actual_size) => {
-                write!(
-                    f,
-                    "ValueExceedsMaxSize({is_fixed}, {size}, {header_size}, {max_size}, [redacted], {actual_size})"
-                )
-            }
-            other => write!(f, "{other:?}"),
+            Error::OutOfBound => f.write_str("OutOfBound"),
+            Error::WriteError(expected, actual) => f
+                .debug_tuple("WriteError")
+                .field(expected)
+                .field(actual)
+                .finish(),
+            Error::InvalidU24(value) => f.debug_tuple("InvalidU24").field(value).finish(),
+            Error::PrimitiveConversionError => f.write_str("PrimitiveConversionError"),
+            Error::DecodableConversionError => f.write_str("DecodableConversionError"),
+            Error::UnInitializedDecoder => f.write_str("UnInitializedDecoder"),
+            Error::ReadError(expected, actual) => f
+                .debug_tuple("ReadError")
+                .field(expected)
+                .field(actual)
+                .finish(),
+            Error::VoidFieldMarker => f.write_str("VoidFieldMarker"),
+            Error::ValueExceedsMaxSize(is_fixed, size, header_size, max_size, _, actual_size) => f
+                .debug_tuple("ValueExceedsMaxSize")
+                .field(is_fixed)
+                .field(size)
+                .field(header_size)
+                .field(max_size)
+                .field(&format_args!("[redacted]"))
+                .field(actual_size)
+                .finish(),
+            Error::SeqExceedsMaxSize => f.write_str("SeqExceedsMaxSize"),
+            Error::NoDecodableFieldPassed => f.write_str("NoDecodableFieldPassed"),
+            Error::ValueIsNotAValidProtocol(value) => f
+                .debug_tuple("ValueIsNotAValidProtocol")
+                .field(value)
+                .finish(),
+            Error::Sv2OptionHaveMoreThenOneElement(value) => f
+                .debug_tuple("Sv2OptionHaveMoreThenOneElement")
+                .field(value)
+                .finish(),
         }
+    }
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self:?}")
     }
 }
 
@@ -277,5 +309,22 @@ mod tests {
         );
         assert!(rendered.contains("[redacted]"));
         assert!(rendered.contains("65536"));
+    }
+
+    #[test]
+    fn binary_error_debug_does_not_dump_embedded_payload() {
+        let sample = vec![0xAB_u8; super::ERROR_SAMPLE_LEN];
+        let err = Error::ValueExceedsMaxSize(false, 1, 1, 32, sample, super::ERROR_SAMPLE_LEN + 1);
+
+        let rendered = alloc::format!("{err:?}");
+
+        assert!(
+            !rendered.contains("171"),
+            "Debug leaked sample bytes: {rendered}"
+        );
+        assert_eq!(
+            rendered,
+            "ValueExceedsMaxSize(false, 1, 1, 32, [redacted], 33)"
+        );
     }
 }

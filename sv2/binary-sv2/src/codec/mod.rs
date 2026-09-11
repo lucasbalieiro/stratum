@@ -112,7 +112,10 @@ impl<T: Fixed> SizeHint for T {
         if available >= Self::SIZE {
             Ok(Self::SIZE)
         } else {
-            Err(Error::ReadError(data.len(), offset + Self::SIZE))
+            Err(Error::ReadError(
+                data.len(),
+                offset.saturating_add(Self::SIZE),
+            ))
         }
     }
 

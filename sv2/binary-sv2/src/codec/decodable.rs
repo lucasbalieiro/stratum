@@ -80,8 +80,9 @@ pub enum PrimitiveMarker {
 
 /// Recursive enum representing data structure fields.
 ///
-/// A `FieldMarker` can either be a primitive or a nested structure. The marker helps the decoder
-/// understand the layout and type of each field in the data, guiding the decoding process.
+/// A `FieldMarker` is a primitive, a nested structure, or a raw span of bytes that the owning
+/// type decodes itself. The marker helps the decoder understand the layout and type of each field
+/// in the data, guiding the decoding process.
 #[derive(Debug, Clone)]
 pub enum FieldMarker {
     /// A primitive data type.
@@ -89,6 +90,9 @@ pub enum FieldMarker {
 
     /// A structured type composed of multiple fields, allowing for nested data.
     Struct(Vec<FieldMarker>),
+
+    /// A span of the given size whose owner decodes it directly from the bytes.
+    Raw(usize),
 }
 
 /// Trait for retrieving the [`FieldMarker`] associated with a type.
@@ -142,6 +146,9 @@ pub enum DecodableField<'a> {
 
     /// Structured field, allowing for nested data structures.
     Struct(Vec<DecodableField<'a>>),
+
+    /// Undecoded bytes, handed to the owning type's `from_bytes`.
+    Raw(&'a mut [u8]),
 }
 
 impl SizeHint for PrimitiveMarker {
@@ -193,6 +200,13 @@ impl SizeHint for FieldMarker {
                 }
                 Ok(size)
             }
+            Self::Raw(size) => {
+                if data.len().saturating_sub(offset) >= *size {
+                    Ok(*size)
+                } else {
+                    Err(Error::ReadError(data.len(), offset.saturating_add(*size)))
+                }
+            }
         }
     }
 }
@@ -240,6 +254,7 @@ impl<'a> From<DecodableField<'a>> for Vec<DecodableField<'a>> {
         match v {
             DecodableField::Primitive(p) => vec![DecodableField::Primitive(p)],
             DecodableField::Struct(ps) => ps,
+            DecodableField::Raw(bytes) => vec![DecodableField::Raw(bytes)],
         }
     }
 }
@@ -367,6 +382,12 @@ impl FieldMarker {
                     decodeds.push(p.decode(head)?);
                 }
                 Ok(DecodableField::Struct(decodeds))
+            }
+            Self::Raw(size) => {
+                if data.len() < *size {
+                    return Err(Error::ReadError(data.len(), *size));
+                }
+                Ok(DecodableField::Raw(&mut data[..*size]))
             }
         }
     }

@@ -162,38 +162,83 @@ pub enum EncodableField<'a> {
     Struct(Vec<EncodableField<'a>>),
 }
 
-impl EncodableField<'_> {
+impl<'a> EncodableField<'a> {
     /// The `encode` method serializes a field into the destination buffer `dst`, starting
-    /// at the provided `offset`. If the field is a structure, it recursively encodes
-    /// each contained field. If the buffer is too small or encoding fails, the method
-    /// returns an error.
-    pub fn encode(&self, dst: &mut [u8], mut offset: usize) -> Result<usize, Error> {
-        match (self, dst.len() >= offset) {
-            (Self::Primitive(p), true) => p.encode(&mut dst[offset..]),
-            (Self::Struct(ps), true) => {
-                let mut result = 0;
-                for p in ps {
-                    let encoded_bytes = p.encode(dst, offset)?;
-                    offset += encoded_bytes;
-                    result += encoded_bytes;
-                }
-                Ok(result)
+    /// at the provided `offset`. If the field is a structure, it encodes each contained
+    /// field in order. If the buffer is too small or encoding fails, the method returns an
+    /// error.
+    pub fn encode(&self, dst: &mut [u8], offset: usize) -> Result<usize, Error> {
+        if dst.len() < offset {
+            return Err(Error::WriteError(offset, dst.len()));
+        }
+        let mut written = 0;
+        for p in self.primitives() {
+            let at = offset + written;
+            if dst.len() < at {
+                return Err(Error::WriteError(at, dst.len()));
             }
-            (_, false) => Err(Error::WriteError(offset, dst.len())),
+            written += p.encode(&mut dst[at..])?;
+        }
+        Ok(written)
+    }
+
+    fn primitives(&self) -> Primitives<'_, 'a> {
+        // Descending into a top level struct keeps flat messages from allocating a stack.
+        let current = match self {
+            Self::Struct(ps) => ps.iter(),
+            other => core::slice::from_ref(other).iter(),
+        };
+        Primitives {
+            current,
+            stack: Vec::new(),
+        }
+    }
+}
+
+// Yields the primitives of a field in encoding order without recursing, so structural depth
+// cannot exhaust the stack.
+struct Primitives<'s, 'a> {
+    current: core::slice::Iter<'s, EncodableField<'a>>,
+    stack: Vec<core::slice::Iter<'s, EncodableField<'a>>>,
+}
+
+impl<'s, 'a> Iterator for Primitives<'s, 'a> {
+    type Item = &'s EncodablePrimitive<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.current.next() {
+                Some(EncodableField::Primitive(p)) => return Some(p),
+                Some(EncodableField::Struct(ps)) => self
+                    .stack
+                    .push(core::mem::replace(&mut self.current, ps.iter())),
+                None => self.current = self.stack.pop()?,
+            }
         }
     }
 }
 
 impl GetSize for EncodableField<'_> {
     fn get_size(&self) -> usize {
-        match self {
-            Self::Primitive(p) => p.get_size(),
-            Self::Struct(ps) => {
-                let mut size = 0;
-                for p in ps {
-                    size += p.get_size();
+        self.primitives()
+            .fold(0usize, |size, p| size.saturating_add(p.get_size()))
+    }
+}
+
+/// Drops nested structs iteratively, so structural depth cannot exhaust the stack.
+///
+/// Note that this makes [`EncodableField`] impossible to destructure by move: consumers have
+/// to match its variants by reference. It also means drop-check requires an [`EncodableField`]
+/// to go out of scope before the data it borrows from, so a field cannot be declared before the
+/// buffer it points into.
+impl Drop for EncodableField<'_> {
+    fn drop(&mut self) {
+        if let Self::Struct(ps) = self {
+            let mut pending = core::mem::take(ps);
+            while let Some(mut field) = pending.pop() {
+                if let Self::Struct(inner) = &mut field {
+                    pending.append(inner);
                 }
-                size
             }
         }
     }

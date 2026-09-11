@@ -46,6 +46,11 @@ pub struct AllocateMiningJobTokenSuccess<'decoder> {
     pub request_id: u32,
     /// A token that makes the JDC eligible for committing a mining job for approval/transactions
     /// declaration or for identifying custom mining job on mining connection.
+    ///
+    /// Not a secret. The token is a capability scoped to one job declaration, and presenting it
+    /// requires an authenticated connection as the JDC it was issued to, so a copy recovered from
+    /// a log grants no access on its own. It is therefore printed in full rather than redacted:
+    /// the value is what correlates a declaration across JDC, JDS and pool logs.
     pub mining_job_token: B0255<'decoder>,
     /// Bitcoin transaction outputs added by JDS.
     pub coinbase_outputs: B064K<'decoder>,

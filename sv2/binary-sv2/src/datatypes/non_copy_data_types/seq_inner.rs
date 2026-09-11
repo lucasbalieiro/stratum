@@ -38,7 +38,7 @@
 use super::inner::{Inner, InnerOwned};
 use crate::{
     codec::{
-        decodable::{Decodable, DecodableField, FieldMarker, GetMarker, PrimitiveMarker},
+        decodable::{Decodable, DecodableField, FieldMarker, GetMarker},
         encodable::{EncodableField, EncodablePrimitive},
         Fixed, GetSize,
     },
@@ -350,45 +350,24 @@ macro_rules! impl_codec_for_sequence {
         impl<'a, T: 'a + Sv2DataType<'a> + GetMarker + GetSize + Decodable<'a>> Decodable<'a>
             for $a
         {
-            fn get_structure(
-                data: &[u8],
-            ) -> Result<Vec<crate::codec::decodable::FieldMarker>, Error> {
+            fn get_structure(data: &[u8]) -> Result<Vec<FieldMarker>, Error> {
                 let len = Self::expected_len(data)?;
-                let available = data.len().saturating_sub(Self::HEADERSIZE);
-                if len > available {
-                    return Err(Error::ReadError(data.len(), len + Self::HEADERSIZE));
+                let mut size = Self::HEADERSIZE;
+                for _ in 0..len {
+                    size = size.saturating_add(T::size_hint(data, size)?);
+                    if size > data.len() {
+                        return Err(Error::ReadError(data.len(), size));
+                    }
                 }
-                let mut inner = Vec::with_capacity(len + Self::HEADERSIZE);
-                for _ in 0..Self::HEADERSIZE {
-                    inner.push(FieldMarker::Primitive(PrimitiveMarker::U8));
-                }
-                let inner_type = T::get_marker();
-                inner.resize(len + Self::HEADERSIZE, inner_type);
-                Ok(inner)
+                Ok(vec![FieldMarker::Raw(size)])
             }
 
-            fn from_decoded_fields(
-                data: Vec<crate::codec::decodable::DecodableField<'a>>,
-            ) -> Result<Self, Error> {
-                let mut inner: Vec<T> = Vec::with_capacity(data.len());
-                let mut i = 0;
-                for element in data {
-                    if i >= Self::HEADERSIZE {
-                        match element {
-                            DecodableField::Primitive(p) => {
-                                let element =
-                                    T::from_decoded_fields(vec![DecodableField::Primitive(p)]);
-                                inner.push(element?)
-                            }
-                            DecodableField::Struct(fields) => {
-                                let element = T::from_decoded_fields(fields);
-                                inner.push(element?)
-                            }
-                        }
-                    }
-                    i += 1;
+            fn from_decoded_fields(data: Vec<DecodableField<'a>>) -> Result<Self, Error> {
+                let mut data = data.into_iter();
+                match (data.next(), data.next()) {
+                    (Some(DecodableField::Raw(bytes)), None) => Self::from_bytes(bytes),
+                    _ => Err(Error::DecodableConversionError),
                 }
-                Ok(Self(inner, PhantomData))
             }
 
             fn from_bytes(data: &'a mut [u8]) -> Result<Self, Error> {
@@ -419,35 +398,22 @@ macro_rules! impl_decodable_for_owned_sequence {
         {
             fn get_structure(data: &[u8]) -> Result<Vec<FieldMarker>, Error> {
                 let len = Self::expected_len(data)?;
-                let available = data.len().saturating_sub(Self::HEADERSIZE);
-                if len > available {
-                    return Err(Error::ReadError(data.len(), len + Self::HEADERSIZE));
+                let mut size = Self::HEADERSIZE;
+                for _ in 0..len {
+                    size = size.saturating_add(T::size_hint(data, size)?);
+                    if size > data.len() {
+                        return Err(Error::ReadError(data.len(), size));
+                    }
                 }
-                let mut inner = Vec::with_capacity(len + Self::HEADERSIZE);
-                for _ in 0..Self::HEADERSIZE {
-                    inner.push(FieldMarker::Primitive(PrimitiveMarker::U8));
-                }
-                let inner_type = T::get_marker();
-                inner.resize(len + Self::HEADERSIZE, inner_type);
-                Ok(inner)
+                Ok(vec![FieldMarker::Raw(size)])
             }
 
             fn from_decoded_fields(data: Vec<DecodableField<'a>>) -> Result<Self, Error> {
-                let mut inner: Vec<T> = Vec::with_capacity(data.len());
-                let mut i = 0;
-                for element in data {
-                    if i >= Self::HEADERSIZE {
-                        match element {
-                            DecodableField::Primitive(p) => inner
-                                .push(T::from_decoded_fields(vec![DecodableField::Primitive(p)])?),
-                            DecodableField::Struct(fields) => {
-                                inner.push(T::from_decoded_fields(fields)?)
-                            }
-                        }
-                    }
-                    i += 1;
+                let mut data = data.into_iter();
+                match (data.next(), data.next()) {
+                    (Some(DecodableField::Raw(bytes)), None) => Self::from_bytes(bytes),
+                    _ => Err(Error::DecodableConversionError),
                 }
-                Ok(Self(inner))
             }
 
             fn from_bytes(data: &'a mut [u8]) -> Result<Self, Error> {
@@ -841,7 +807,7 @@ impl<T: GetSize> GetSize for Sv2OptionOwned<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::{Decodable, Seq064K};
+    use crate::{decodable::FieldMarker, Decodable, Seq064K, U256};
 
     #[test]
     fn sv2_option_as_ref_borrows_the_inner_value() {
@@ -875,5 +841,25 @@ mod test {
                 data.len()
             ),
         }
+    }
+
+    #[test]
+    fn get_structure_rejects_count_that_cannot_fit_element_width() {
+        let mut data = alloc::vec![0_u8; u16::MAX as usize + 2];
+        data[0] = 0xff;
+        data[1] = 0xff;
+
+        let result = <Seq064K<'static, U256<'static>> as Decodable<'static>>::get_structure(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_structure_describes_a_valid_sequence_with_one_marker() {
+        let count = u16::MAX as usize;
+        let mut data = alloc::vec![0_u8; 2 + count * 2];
+        data[..2].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        let markers = <Seq064K<'static, u16> as Decodable<'static>>::get_structure(&data).unwrap();
+        assert!(matches!(markers[..], [FieldMarker::Raw(size)] if size == data.len()));
     }
 }
