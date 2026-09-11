@@ -1,7 +1,7 @@
 #[derive(Debug)]
 pub enum ParserError {
     UnexpectedMessage(u8),
-    BadPayloadSize,
+    BadPayloadSize(framing_sv2::Error),
     UnexpectedPoolMessage,
     BinaryError(binary_sv2::Error),
     TlvError(crate::tlv::TlvError),
@@ -32,7 +32,7 @@ impl core::fmt::Display for ParserError {
             ParserError::UnexpectedMessage(msg_type) => {
                 write!(f, "Unexpected message type: {msg_type}")
             }
-            ParserError::BadPayloadSize => write!(f, "Bad payload size"),
+            ParserError::BadPayloadSize(e) => write!(f, "Bad payload size: {e}"),
             ParserError::UnexpectedPoolMessage => write!(f, "Unexpected pool message"),
             ParserError::BinaryError(e) => write!(f, "Binary error: {e}"),
             ParserError::TlvError(e) => write!(f, "TLV error: {e}"),

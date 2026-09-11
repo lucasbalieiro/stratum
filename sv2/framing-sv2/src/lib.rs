@@ -21,19 +21,20 @@
 //!
 //! ## Usage
 //!
-//! Nearly all messages sent between Sv2 roles are serialized with the [`framing::Sv2Frame`]. The
-//! exception is when two Sv2 roles exchange Noise protocol handshake messages.
+//! Nearly all messages sent between Sv2 roles are serialized with the
+//! [`framing::MessageFrame`]. The exception is when two Sv2 roles exchange Noise protocol
+//! handshake messages.
 //!
 //! Before Sv2 roles can communicate securely, they must perform a Noise handshake (note that Noise
 //! encryption is optional for communication between two local Sv2 roles (i.e. a local mining
 //! device and a local mining proxy), but required between two remote Sv2 roles (i.e. a local
-//! mining proxy and a remote pool)). During this process, the [`framing::HandShakeFrame`] is used
+//! mining proxy and a remote pool)). During this process, the [`framing::HandshakeMessage`] is used
 //! to transmit encrypted messages between the roles. After the handshake is completed and the
-//! connection transitions into transport mode, [`framing::Sv2Frame`] is used for all messages.
+//! connection transitions into transport mode, [`framing::MessageFrame`] is used for all messages.
 //!
 //! Once the Noise handshake is complete (if it was performed at all), all subsequent messages are
-//! framed using the [`framing::Sv2Frame`]. Each frame consists of a [`header::Header`] followed by
-//! a serialized payload.
+//! framed using the [`framing::MessageFrame`]. Each frame consists of a [`header::Header`]
+//! followed by a serialized payload.
 //!
 //! ## Build Options
 //!
@@ -61,13 +62,8 @@ pub mod error;
 pub mod header;
 pub use error::Error;
 
-use noise_sv2::AEAD_MAC_LEN;
-
 /// Size of the SV2 frame header in bytes.
 pub const SV2_FRAME_HEADER_SIZE: usize = 6;
-
-/// Size of the encrypted SV2 frame header, including the MAC.
-pub const ENCRYPTED_SV2_FRAME_HEADER_SIZE: usize = SV2_FRAME_HEADER_SIZE + AEAD_MAC_LEN;
 
 /// Maximum size of an SV2 frame chunk in bytes.
 pub const SV2_FRAME_CHUNK_SIZE: usize = 65535;

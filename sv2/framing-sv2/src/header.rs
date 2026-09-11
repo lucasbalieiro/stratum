@@ -2,7 +2,7 @@
 //!
 //! Defines the [`crate::header::Header`] structure used in the framing of Sv2 messages.
 //!
-//! Each [`crate::framing::Sv2Frame`] starts with a 6-byte header with information about the
+//! Each [`crate::framing::MessageFrame`] starts with a 6-byte header with information about the
 //! message payload, including its extension type, if it is associated with a specific mining
 //! channel, the type of message (e.g. `SetupConnection`, `NewMiningJob`, etc.) and the payload
 //! length.
@@ -24,8 +24,7 @@ use alloc::vec::Vec;
 use binary_sv2::{Deserialize, Serialize, U24};
 use core::convert::TryInto;
 
-use crate::{SV2_FRAME_CHUNK_SIZE, SV2_FRAME_HEADER_SIZE};
-use noise_sv2::AEAD_MAC_LEN;
+use crate::SV2_FRAME_HEADER_SIZE;
 
 /// Abstraction for a Sv2 Frame Header.
 #[derive(Debug, Serialize, Deserialize, Copy, Clone)]
@@ -55,7 +54,7 @@ impl Header {
     #[inline]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() < Self::SIZE {
-            return Err(Error::UnexpectedHeaderLength(bytes.len() as isize));
+            return Err(Error::UnexpectedHeaderLength(bytes.len()));
         };
         let extension_type = u16::from_le_bytes([bytes[0], bytes[1]]);
         let msg_type = bytes[2];
@@ -67,21 +66,44 @@ impl Header {
         })
     }
 
-    // Get the payload length
-    #[allow(clippy::len_without_is_empty)]
+    /// Writes the header into the first [`Header::SIZE`] bytes of `dst`.
+    ///
+    /// The mirror of [`Header::from_bytes`]. Going through the derived `Serialize` instead costs
+    /// a `Vec` allocation per frame to emit six bytes.
     #[inline]
-    pub(crate) fn len(&self) -> usize {
+    pub fn write_into(&self, dst: &mut [u8]) -> Result<(), Error> {
+        if dst.len() < Self::SIZE {
+            return Err(Error::UnexpectedHeaderLength(dst.len()));
+        }
+        dst[0..2].copy_from_slice(&self.extension_type.to_le_bytes());
+        dst[2] = self.msg_type;
+        let msg_length: u32 = self.msg_length.into();
+        dst[3..6].copy_from_slice(&msg_length.to_le_bytes()[..3]);
+        Ok(())
+    }
+
+    /// Length of the payload the header declares, not including the header itself.
+    #[inline]
+    pub fn payload_length(&self) -> usize {
         let inner: u32 = self.msg_length.into();
         inner as usize
     }
 
     // Construct a [`Header`] from payload length, type and extension type.
     #[inline]
-    pub(crate) fn from_len(msg_length: u32, msg_type: u8, extension_type: u16) -> Option<Header> {
-        Some(Self {
+    pub(crate) fn from_len(
+        msg_length: usize,
+        msg_type: u8,
+        extension_type: u16,
+    ) -> Result<Header, Error> {
+        let len = u32::try_from(msg_length)
+            .ok()
+            .and_then(|len| U24::try_from(len).ok())
+            .ok_or(Error::PayloadTooLong(msg_length))?;
+        Ok(Self {
             extension_type,
             msg_type,
-            msg_length: msg_length.try_into().ok()?,
+            msg_length: len,
         })
     }
 
@@ -105,28 +127,6 @@ impl Header {
     /// A header can represent a channel message if the MSB(Most Significant Bit) is set.
     pub fn channel_msg(&self) -> bool {
         self.extension_type & Self::CHANNEL_MSG_MASK != 0
-    }
-
-    /// Calculates the total length of a chunked message, accounting for MAC overhead.
-    ///
-    /// Determines the total length of the message frame, including the overhead introduced by
-    /// MACs. If the message is split into multiple chunks (due to its size exceeding the maximum
-    /// frame chunk size), each chunk requires a MAC for integrity verification.
-    ///
-    /// This method is particularly relevant when the message is being encrypted using the Noise
-    /// protocol, where the payload is divided into encrypted chunks, and each chunk is appended
-    /// with a MAC. However, it can also be applied to non-encrypted chunked messages to calculate
-    /// their total length.
-    ///
-    /// The calculated length includes the full payload length and any additional space required
-    /// for the MACs.
-    #[allow(clippy::manual_div_ceil)]
-    pub fn encrypted_len(&self) -> usize {
-        let len = self.len();
-        let payload_per_chunk = SV2_FRAME_CHUNK_SIZE - AEAD_MAC_LEN;
-
-        let chunks = (len + payload_per_chunk - 1) / payload_per_chunk;
-        len + chunks * AEAD_MAC_LEN
     }
 }
 
@@ -156,7 +156,7 @@ mod tests {
         let extension_type = 0;
         let msg_type = 0x1;
         let msg_length = 0x1234_u32;
-        let header = Header::from_len(msg_length, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length as usize, msg_type, extension_type).unwrap();
         assert_eq!(header.extension_type, 0);
         assert_eq!(header.msg_type, 0x1);
         assert_eq!(header.msg_length, 0x1234_u32.try_into().unwrap());
@@ -177,7 +177,7 @@ mod tests {
         msg_type: u8,
         extension_type: u16,
     ) {
-        let header = Header::from_len(msg_length.0, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, msg_type, extension_type).unwrap();
         let mut bytes = vec![0u8; SV2_FRAME_HEADER_SIZE];
         if binary_sv2::to_writer(header, &mut bytes[..]).is_err() {
             return;
@@ -229,7 +229,8 @@ mod tests {
             extension_type & 0b0111_1111_1111_1111
         };
 
-        let header = Header::from_len(msg_length, msg_type, adjusted_extension_type).unwrap();
+        let header =
+            Header::from_len(msg_length as usize, msg_type, adjusted_extension_type).unwrap();
 
         assert_eq!(
             header.channel_msg(),
@@ -246,7 +247,7 @@ mod tests {
         let msg_length = 100u32;
         let msg_type = 0x01u8;
 
-        let header = Header::from_len(msg_length, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length as usize, msg_type, extension_type).unwrap();
 
         let without_channel = header.ext_type_without_channel_msg();
         let expected = extension_type & 0b0111_1111_1111_1111;
@@ -258,28 +259,11 @@ mod tests {
     }
 
     #[quickcheck]
-    fn prop_header_encrypted_len_calculation(msg_length: ValidU24) {
-        let header = Header::from_len(msg_length.0, 0x01, 0x0000).unwrap();
-
-        let encrypted_len = header.encrypted_len();
-        let aead_mac_len = AEAD_MAC_LEN;
-        let payload_per_chunk = SV2_FRAME_CHUNK_SIZE - aead_mac_len;
-        let chunks = (msg_length.0 as usize + payload_per_chunk - 1) / payload_per_chunk;
-        let expected_len = msg_length.0 as usize + chunks * aead_mac_len;
-
-        assert_eq!(
-            encrypted_len, expected_len,
-            "encrypted_len() mismatch for msg_length={}: {} chunks, expected {} bytes, got {} bytes",
-            msg_length.0, chunks, expected_len, encrypted_len
-        );
-    }
-
-    #[quickcheck]
     fn prop_header_len_consistency(msg_length: ValidU24) {
-        let header = Header::from_len(msg_length.0, 0x01, 0x0000).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, 0x01, 0x0000).unwrap();
 
         assert_eq!(
-            header.len(),
+            header.payload_length(),
             msg_length.0 as usize,
             "Header len() should match the msg_length used to create it"
         );

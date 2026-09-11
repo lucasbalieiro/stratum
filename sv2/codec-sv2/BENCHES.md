@@ -31,7 +31,7 @@ cargo bench --bench pool_lifecycle
 
 ### 1. Encoder (`encoder.rs`)
 
-- **`encoder/plain`** — Single-frame encode with a plain `Encoder<T>`
+- **`encoder/plain`** — Single-frame encode with a plain `Encoder`
 - **`encoder/creation/plain`** — `Encoder::new()` overhead
 
 With `noise_sv2` feature:
@@ -42,7 +42,7 @@ With `noise_sv2` feature:
 ### 2. Decoder (`decoder.rs`)
 
 - **`decoder/plain`** — Full decode loop: fill writable buffer, call `next_frame()` until complete
-- **`decoder/creation/plain`** — `StandardDecoder::new()` overhead
+- **`decoder/creation/plain`** — `Decoder::new()` overhead
 
 ### 3. Noise Roundtrip (`noise_roundtrip.rs`)
 
@@ -52,10 +52,15 @@ Requires `noise_sv2` feature.
 - **`noise/encode_only`** — Noise encode in isolation with a persistent transport session
 - **`noise/handshake/step_0`** — Initiator generates the first EllSwift key-exchange message
 - **`noise/handshake/step_1`** — Responder processes step-0 and generates its response
+- **`noise/encrypted_payload_length`** — `encrypted_payload_length()` across payload sizes: the
+  encrypted size of a declared payload, one MAC per chunk
 
 ### 4. Serialization (`serialization.rs`)
 
-- **`serialization/frame_from_message`** — `Sv2Frame::from_message()`: stores message as `Option<T>`, no serialization yet
+- **`serialization/frame_from_message`** — `MessageFrame::from_message()`: builds the header and
+  holds the message, no serialization yet
+- **`serialization/frame_serialization_roundtrip`** — `from_message()` followed by
+  `encode_into()` into a caller-provided buffer
 
 ### 5. Buffer Pool Exhaustion (`buffer_exhaustion.rs`)
 
@@ -70,7 +75,7 @@ patterns — specifically the cost difference between **holding decoded frames**
 immediately after deserialization).
 
 Two variants appear in every group:
-- **`zc_hold`** — decoded `Sv2Frame` is kept alive; pool slot is pinned for the
+- **`zc_hold`** — decoded `SerializedFrame` is kept alive; pool slot is pinned for the
   lifetime of the frame.
 - **`owned_release`** — payload is copied into an `OwnedMsg` and the frame is
   dropped immediately, freeing the pool slot for reuse.

@@ -10,10 +10,22 @@ use crate::SV2_FRAME_HEADER_SIZE;
 pub enum Error {
     /// Binary Sv2 data format error.
     BinarySv2Error(binary_sv2::Error),
-    ExpectedHandshakeFrame,
-    ExpectedSv2Frame,
-    MissingHeader,
-    UnexpectedHeaderLength(isize),
+
+    /// The buffer passed to [`crate::framing::EncodableFrame::encode_into`] is not exactly as
+    /// long as the frame.
+    UnexpectedDestinationLength {
+        /// Length the encoded frame takes.
+        expected: usize,
+        /// Length of the buffer that was passed.
+        actual: usize,
+    },
+
+    /// The buffer is too short to hold a [`crate::header::Header`].
+    UnexpectedHeaderLength(usize),
+
+    /// A message of the given serialized length does not fit the 24-bit `msg_length` field of a
+    /// [`crate::header::Header`].
+    PayloadTooLong(usize),
 }
 
 impl fmt::Display for Error {
@@ -23,22 +35,22 @@ impl fmt::Display for Error {
             BinarySv2Error(ref e) => {
                 write!(f, "BinarySv2Error: `{e}`")
             }
-            ExpectedHandshakeFrame => {
-                write!(f, "Expected `HandshakeFrame`, received `Sv2Frame`")
-            }
-            ExpectedSv2Frame => {
-                write!(f, "Expected `Sv2Frame`, received `HandshakeFrame`")
-            }
-            MissingHeader => {
+            UnexpectedDestinationLength { expected, actual } => {
                 write!(
                     f,
-                    "Frame is missing a header. All frames (Handshake or Sv2) must have a header"
+                    "Destination buffer is `{actual}` bytes long, the encoded frame takes `{expected}`"
                 )
             }
             UnexpectedHeaderLength(actual_size) => {
                 write!(
                     f,
                     "Unexpected `Header` length: `{actual_size}`, should be equal or more to {SV2_FRAME_HEADER_SIZE}"
+                )
+            }
+            PayloadTooLong(len) => {
+                write!(
+                    f,
+                    "Payload of `{len}` bytes does not fit the 24-bit `msg_length` of a `Header`"
                 )
             }
         }

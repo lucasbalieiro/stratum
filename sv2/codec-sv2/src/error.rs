@@ -5,7 +5,7 @@
 //! convenience.
 
 use core::fmt;
-use framing_sv2::Error as FramingError;
+use framing_sv2::framing::SizeHint;
 #[cfg(feature = "noise_sv2")]
 use noise_sv2::{AeadError, Error as NoiseError};
 
@@ -18,7 +18,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Enumeration of possible errors in the `codec_sv2` module.
 ///
 /// This enum represents various errors that can occur within the `codec_sv2` module, including
-/// errors from related crates like [`binary_sv2`], [`framing_sv2`], and [`noise_sv2`].
+/// errors from related crates like [`binary_sv2`], [`framing_sv2`], and `noise_sv2`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     /// AEAD (`snow`) error in the Noise protocol.
@@ -29,37 +29,14 @@ pub enum Error {
     BinarySv2Error(binary_sv2::Error),
 
     /// Framing Sv2 error.
-    FramingError(FramingError),
-
-    /// Framing Sv2 error.
     FramingSv2Error(framing_sv2::Error),
-
-    /// Invalid step for initiator in the Noise protocol.
-    #[cfg(feature = "noise_sv2")]
-    InvalidStepForInitiator,
-
-    /// Invalid step for responder in the Noise protocol.
-    #[cfg(feature = "noise_sv2")]
-    InvalidStepForResponder,
-
-    /// Incomplete frame with the number of missing bytes remaining to completion.
-    MissingBytes(usize),
 
     /// Sv2 Noise protocol error.
     #[cfg(feature = "noise_sv2")]
     NoiseSv2Error(NoiseError),
 
-    /// Noise protocol is not in the expected handshake state.
-    #[cfg(feature = "noise_sv2")]
-    NotInHandShakeState,
-
-    /// Unexpected state in the Noise protocol.
-    UnexpectedNoiseState,
-
-    /// The decoder buffer held a complete frame followed by the given number of surplus bytes.
-    ///
-    /// The buffered data, including that complete frame, has already been discarded.
-    UnexpectedTrailingBytes(usize),
+    /// The bytes taken out of the decoder buffer do not hold exactly one frame.
+    UnexpectedFrameSize(SizeHint),
 }
 
 impl fmt::Display for Error {
@@ -69,19 +46,7 @@ impl fmt::Display for Error {
             #[cfg(feature = "noise_sv2")]
             AeadError(e) => write!(f, "Aead Error: `{e:?}`"),
             BinarySv2Error(e) => write!(f, "Binary Sv2 Error: `{e}`"),
-            FramingError(e) => write!(f, "Framing error in codec: `{e}`"),
             FramingSv2Error(e) => write!(f, "Framing Sv2 Error: `{e}`"),
-            #[cfg(feature = "noise_sv2")]
-            InvalidStepForInitiator => write!(
-                f,
-                "This noise handshake step can not be executed by an initiato"
-            ),
-            #[cfg(feature = "noise_sv2")]
-            InvalidStepForResponder => write!(
-                f,
-                "This noise handshake step can not be executed by a responder"
-            ),
-            MissingBytes(u) => write!(f, "Missing `{u}` bytes to complete the frame"),
             #[cfg(feature = "noise_sv2")]
             NoiseSv2Error(e) => match e {
                 NoiseError::InvalidCertificate(msg) => {
@@ -91,19 +56,8 @@ impl fmt::Display for Error {
                     write!(f, "Noise SV2 Error: {:?}", other)
                 }
             },
-            #[cfg(feature = "noise_sv2")]
-            NotInHandShakeState => write!(
-                f,
-                "This operation can be executed only during the noise handshake"
-            ),
-            UnexpectedNoiseState => {
-                write!(f, "Noise state is incorrect")
-            }
-            UnexpectedTrailingBytes(u) => {
-                write!(
-                    f,
-                    "Buffer held `{u}` bytes beyond the end of the frame; buffered data discarded"
-                )
+            UnexpectedFrameSize(hint) => {
+                write!(f, "Buffered bytes do not hold exactly one frame: {hint}")
             }
         }
     }
@@ -125,6 +79,12 @@ impl From<binary_sv2::Error> for Error {
 impl From<framing_sv2::Error> for Error {
     fn from(e: framing_sv2::Error) -> Self {
         Error::FramingSv2Error(e)
+    }
+}
+
+impl From<SizeHint> for Error {
+    fn from(hint: SizeHint) -> Self {
+        Error::UnexpectedFrameSize(hint)
     }
 }
 

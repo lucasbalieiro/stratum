@@ -1,7 +1,7 @@
 // # Sv2 Frame Example
 //
 // This example demonstrates how to use the `framing_sv2` crate to construct, serialize, and
-// deserialize a regular Sv2 message frame (`Sv2Frame`). It showcases how to:
+// deserialize a regular Sv2 message frame (`MessageFrame`). It showcases how to:
 //
 // - Define a message payload and frame it using the Sv2 protocol.
 // - Define a custom message type (`CustomMessage`) to be framed.
@@ -18,7 +18,7 @@
 // ```
 
 use binary_sv2::{Deserialize, Serialize};
-use framing_sv2::framing::Sv2Frame;
+use framing_sv2::framing::{EncodableFrame, MessageFrame, SerializedFrame};
 use std::convert::TryInto;
 
 // Example message type (e.g., SetupConnection)
@@ -36,24 +36,22 @@ fn main() {
     let message = CustomMessage { nonce: 42 };
 
     // Create the frame from the message
-    let frame: Sv2Frame<CustomMessage, Vec<u8>> =
-        Sv2Frame::from_message(message.clone(), MSG_TYPE, EXT_TYPE, false)
+    let frame: MessageFrame<CustomMessage> =
+        MessageFrame::from_message(message.clone(), MSG_TYPE, EXT_TYPE, false)
             .expect("Failed to frame the message");
 
     // Serialize the frame into a byte array for transmission
     let mut serialized_frame = vec![0u8; frame.encoded_length()];
     frame
-        .serialize(&mut serialized_frame)
+        .encode_into(&mut serialized_frame)
         .expect("Failed to serialize the frame");
 
-    // Deserialize the frame from bytes back into an Sv2Frame
-    let mut deserialized_frame = Sv2Frame::<CustomMessage, Vec<u8>>::from_bytes(serialized_frame)
+    // Deserialize the frame from bytes back into an MessageFrame
+    let mut deserialized_frame = SerializedFrame::<Vec<u8>>::from_bytes(serialized_frame)
         .expect("Failed to deserialize frame");
 
     // Assert that deserialized header has the original content
-    let deserialized_header = deserialized_frame
-        .get_header()
-        .expect("Frame has no header");
+    let deserialized_header = deserialized_frame.header();
     assert_eq!(deserialized_header.msg_type(), MSG_TYPE);
     assert_eq!(deserialized_header.ext_type(), EXT_TYPE);
 

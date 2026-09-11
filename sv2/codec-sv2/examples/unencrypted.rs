@@ -15,8 +15,8 @@
 // ```
 
 use binary_sv2::{Deserialize, Serialize};
-use codec_sv2::{Encoder, Error, StandardDecoder, StandardSv2Frame};
-use framing_sv2::framing::Sv2Frame;
+use codec_sv2::{Decoded, Decoder, Encoder, MessageFrame};
+use framing_sv2::framing::SerializedFrame;
 use std::{
     convert::TryInto,
     io::{Read, Write},
@@ -77,12 +77,14 @@ fn main() {
     sender_side(stream_sender, msg, msg_type, extension_type, channel_msg);
 
     // Receiver Side
-    let mut decoded_frame = receiver_side(stream_receiver);
+
+    // The decoder owns the buffer the frame points into, so it has to outlive the frame: with the
+    // `with_buffer_pool` feature the pool's `Drop` waits for every slice it handed out.
+    let mut decoder = Decoder::new();
+    let mut decoded_frame = receiver_side(stream_receiver, &mut decoder);
 
     // Parse the decoded frame header and payload
-    let decoded_frame_header = decoded_frame
-        .get_header()
-        .expect("Failed to get the frame header");
+    let decoded_frame_header = decoded_frame.header();
     let decoded_msg: CustomMessage = binary_sv2::from_bytes(decoded_frame.payload())
         .expect("Failed to extract the message from the payload");
 
@@ -100,11 +102,11 @@ fn sender_side(
 ) {
     // Create the frame
     let frame =
-        StandardSv2Frame::<CustomMessage>::from_message(msg, msg_type, extension_type, channel_msg)
+        MessageFrame::<CustomMessage>::from_message(msg, msg_type, extension_type, channel_msg)
             .expect("Failed to create the frame");
 
     // Encode the frame
-    let mut encoder = Encoder::<CustomMessage>::new();
+    let mut encoder = Encoder::new();
     let encoded_frame = encoder
         .encode(frame.clone())
         .expect("Failed to encode the frame");
@@ -115,15 +117,12 @@ fn sender_side(
         .expect("Failed to send the encoded frame");
 }
 
-fn receiver_side(mut stream_receiver: TcpStream) -> Sv2Frame<CustomMessage, Slice> {
-    // Initialize the decoder
-    let mut decoder = StandardDecoder::<CustomMessage>::new();
-
+fn receiver_side(mut stream_receiver: TcpStream, decoder: &mut Decoder) -> SerializedFrame<Slice> {
     // Continuously read the frame from the TCP stream into the decoder buffer until the full
     // message is received.
     //
     // Note: The length of the payload is defined in a header field. Every call to `next_frame`
-    // will return a `MissingBytes` error, until the full payload is received.
+    // returns `Incomplete`, until the full payload is received.
     loop {
         let decoder_buf = decoder.writable();
 
@@ -133,10 +132,10 @@ fn receiver_side(mut stream_receiver: TcpStream) -> Sv2Frame<CustomMessage, Slic
             .expect("Failed to read the encoded frame header");
 
         match decoder.next_frame() {
-            Ok(decoded_frame) => {
+            Ok(Decoded::Frame(decoded_frame)) => {
                 return decoded_frame;
             }
-            Err(Error::MissingBytes(_)) => {}
+            Ok(Decoded::Incomplete(_)) => {}
             Err(_) => panic!("Failed to decode the frame"),
         }
     }

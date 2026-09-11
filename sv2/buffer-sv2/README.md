@@ -67,10 +67,10 @@ The `Buffer` trait is designed to work with the
 2. Parsing the filled bytes to compute the message length.
 3. Filling a buffer with the size of the message.
 4. Using the header and message to construct a
-   [`framing_sv2::framing::Frame`](https://docs.rs/framing_sv2/2.0.0/framing_sv2/framing/enum.Frame.html).
+   [`framing_sv2::framing::SerializedFrame`](https://docs.rs/framing_sv2/latest/framing_sv2/framing/struct.SerializedFrame.html).
 
 To fill the buffer, the `codec_sv2` decoder must pass a reference of the buffer to a filler. To
-construct a `Frame`, the decoder must pass ownership of the buffer to the `Frame`.
+construct a `SerializedFrame`, the decoder must pass ownership of the buffer to the frame.
 
 ```rust
 fn get_writable(&mut self, len: usize) -> &mut [u8];
