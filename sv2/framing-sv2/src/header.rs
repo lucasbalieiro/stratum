@@ -91,11 +91,19 @@ impl Header {
 
     // Construct a [`Header`] from payload length, type and extension type.
     #[inline]
-    pub(crate) fn from_len(msg_length: u32, msg_type: u8, extension_type: u16) -> Option<Header> {
-        Some(Self {
+    pub(crate) fn from_len(
+        msg_length: usize,
+        msg_type: u8,
+        extension_type: u16,
+    ) -> Result<Header, Error> {
+        let len = u32::try_from(msg_length)
+            .ok()
+            .and_then(|len| U24::try_from(len).ok())
+            .ok_or(Error::PayloadTooLong(msg_length))?;
+        Ok(Self {
             extension_type,
             msg_type,
-            msg_length: msg_length.try_into().ok()?,
+            msg_length: len,
         })
     }
 
@@ -148,7 +156,7 @@ mod tests {
         let extension_type = 0;
         let msg_type = 0x1;
         let msg_length = 0x1234_u32;
-        let header = Header::from_len(msg_length, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length as usize, msg_type, extension_type).unwrap();
         assert_eq!(header.extension_type, 0);
         assert_eq!(header.msg_type, 0x1);
         assert_eq!(header.msg_length, 0x1234_u32.try_into().unwrap());
@@ -169,7 +177,7 @@ mod tests {
         msg_type: u8,
         extension_type: u16,
     ) {
-        let header = Header::from_len(msg_length.0, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, msg_type, extension_type).unwrap();
         let mut bytes = vec![0u8; SV2_FRAME_HEADER_SIZE];
         if binary_sv2::to_writer(header, &mut bytes[..]).is_err() {
             return;
@@ -221,7 +229,8 @@ mod tests {
             extension_type & 0b0111_1111_1111_1111
         };
 
-        let header = Header::from_len(msg_length, msg_type, adjusted_extension_type).unwrap();
+        let header =
+            Header::from_len(msg_length as usize, msg_type, adjusted_extension_type).unwrap();
 
         assert_eq!(
             header.channel_msg(),
@@ -238,7 +247,7 @@ mod tests {
         let msg_length = 100u32;
         let msg_type = 0x01u8;
 
-        let header = Header::from_len(msg_length, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length as usize, msg_type, extension_type).unwrap();
 
         let without_channel = header.ext_type_without_channel_msg();
         let expected = extension_type & 0b0111_1111_1111_1111;
@@ -251,7 +260,7 @@ mod tests {
 
     #[quickcheck]
     fn prop_header_len_consistency(msg_length: ValidU24) {
-        let header = Header::from_len(msg_length.0, 0x01, 0x0000).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, 0x01, 0x0000).unwrap();
 
         assert_eq!(
             header.payload_length(),

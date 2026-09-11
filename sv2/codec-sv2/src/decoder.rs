@@ -600,8 +600,8 @@ mod prop_tests {
 
         let frame = match MessageFrame::<TestMessage>::from_message(msg, msg_type, ext_type, false)
         {
-            Some(f) => f,
-            None => return TestResult::discard(),
+            Ok(f) => f,
+            Err(_) => return TestResult::discard(),
         };
 
         let expected_ext_type = frame.header().ext_type();
@@ -646,8 +646,8 @@ mod prop_tests {
         }
 
         let frame = match MessageFrame::<TestMessage>::from_message(msg, msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
+            Ok(f) => f,
+            Err(_) => return TestResult::discard(),
         };
 
         let mut encoder = Encoder::new();
@@ -1140,13 +1140,13 @@ mod prop_tests {
     ) -> TestResult {
         let frame1 =
             match MessageFrame::<TestMessage>::from_message(msg1.clone(), msg_type, 0, false) {
-                Some(f) => f,
-                None => return TestResult::discard(),
+                Ok(f) => f,
+                Err(_) => return TestResult::discard(),
             };
         let frame2 =
             match MessageFrame::<TestMessage>::from_message(msg2.clone(), msg_type, 0, false) {
-                Some(f) => f,
-                None => return TestResult::discard(),
+                Ok(f) => f,
+                Err(_) => return TestResult::discard(),
             };
 
         let mut encoder = Encoder::new();
@@ -1193,8 +1193,8 @@ mod prop_tests {
 
         let sv2_frame =
             match MessageFrame::<TestMessage>::from_message(msg, msg_type, ext_type, false) {
-                Some(f) => f,
-                None => return TestResult::discard(),
+                Ok(f) => f,
+                Err(_) => return TestResult::discard(),
             };
         let expected_ext = sv2_frame.header().ext_type();
 
@@ -1230,8 +1230,8 @@ mod prop_tests {
     #[quickcheck]
     fn prop_noise_decoder_handles_partial_data(msg: TestMessage, msg_type: u8) -> TestResult {
         let frame = match MessageFrame::<TestMessage>::from_message(msg, msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
+            Ok(f) => f,
+            Err(_) => return TestResult::discard(),
         };
 
         let (mut sender_state, mut receiver_state) = make_transport_state_pair();
@@ -1320,13 +1320,13 @@ mod prop_tests {
 
         let frame1 =
             match MessageFrame::<TestMessage>::from_message(msg1.clone(), msg_type, 0, false) {
-                Some(f) => f,
-                None => return TestResult::discard(),
+                Ok(f) => f,
+                Err(_) => return TestResult::discard(),
             };
         let frame2 =
             match MessageFrame::<TestMessage>::from_message(msg2.clone(), msg_type, 0, false) {
-                Some(f) => f,
-                None => return TestResult::discard(),
+                Ok(f) => f,
+                Err(_) => return TestResult::discard(),
             };
 
         let mut encoder = NoiseEncoder::new();

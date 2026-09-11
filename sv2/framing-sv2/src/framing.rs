@@ -118,16 +118,17 @@ pub struct MessageFrame<T> {
 impl<T: Serialize + GetSize> MessageFrame<T> {
     /// Tries to build a [`MessageFrame`] from a message.
     ///
-    /// Returns a [`MessageFrame`] if the size of the message fits in the frame, [`None`] otherwise.
+    /// Errors out with [`Error::PayloadTooLong`] if the serialized size of the message does not
+    /// fit in a frame.
     pub fn from_message(
         message: T,
         message_type: u8,
         extension_type: u16,
         channel_msg: bool,
-    ) -> Option<Self> {
+    ) -> Result<Self, Error> {
         let extension_type = update_extension_type(extension_type, channel_msg);
-        let len = u32::try_from(message.get_size()).ok()?;
-        Header::from_len(len, message_type, extension_type).map(|header| Self { header, message })
+        let header = Header::from_len(message.get_size(), message_type, extension_type)?;
+        Ok(Self { header, message })
     }
 
     /// Returns the [`Header`] of the frame.
@@ -324,17 +325,20 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn from_message_rejects_a_size_that_does_not_fit_in_a_u32() {
-        let msg = HugeMsg((u32::MAX as usize) + 2);
-        assert!(MessageFrame::<HugeMsg>::from_message(msg, 0x01, 0x0000, false).is_none());
+        let len = (u32::MAX as usize) + 2;
+        assert_eq!(
+            MessageFrame::<HugeMsg>::from_message(HugeMsg(len), 0x01, 0x0000, false).err(),
+            Some(Error::PayloadTooLong(len))
+        );
     }
 
     #[test]
     fn from_message_rejects_a_size_that_does_not_fit_in_a_u24() {
         const U24_MAX: usize = 16_777_215;
 
-        assert!(
-            MessageFrame::<HugeMsg>::from_message(HugeMsg(U24_MAX + 1), 0x01, 0x0000, false)
-                .is_none()
+        assert_eq!(
+            MessageFrame::<HugeMsg>::from_message(HugeMsg(U24_MAX + 1), 0x01, 0x0000, false).err(),
+            Some(Error::PayloadTooLong(U24_MAX + 1))
         );
 
         let frame = MessageFrame::<HugeMsg>::from_message(HugeMsg(U24_MAX), 0x01, 0x0000, false)
@@ -405,13 +409,13 @@ mod tests {
 
         if msg.get_size() < 16_777_216 {
             assert!(
-                frame.is_some(),
+                frame.is_ok(),
                 "Frame creation should succeed for message size {} < U24_MAX",
                 msg.get_size()
             );
         } else {
             assert!(
-                frame.is_none(),
+                frame.is_err(),
                 "Frame creation should fail for message size {} >= U24_MAX",
                 msg.get_size()
             );
@@ -474,7 +478,7 @@ mod tests {
         msg_type: u8,
         extension_type: u16,
     ) {
-        let header = Header::from_len(msg_length.0, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, msg_type, extension_type).unwrap();
 
         let mut hand = [0u8; Header::SIZE];
         header.write_into(&mut hand).unwrap();
@@ -564,7 +568,7 @@ mod tests {
         let msg_type = 0x01u8;
         let extension_type = 0x0000u16;
 
-        let header = Header::from_len(msg_length.0, msg_type, extension_type).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, msg_type, extension_type).unwrap();
 
         let mut bytes = vec![0u8; Header::SIZE + msg_length.0 as usize];
         binary_sv2::to_writer(header, &mut bytes[..Header::SIZE]).unwrap();
@@ -780,7 +784,7 @@ mod tests {
         let msg_type = 0x01u8;
         let ext = 0u16;
 
-        let header = Header::from_len(msg_length.0, msg_type, ext).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, msg_type, ext).unwrap();
 
         let payload_len = msg_length.0 as usize;
         if payload_len == 0 {
@@ -807,7 +811,7 @@ mod tests {
         let msg_type = 0x01u8;
         let ext = 0u16;
 
-        let header = Header::from_len(msg_length.0, msg_type, ext).unwrap();
+        let header = Header::from_len(msg_length.0 as usize, msg_type, ext).unwrap();
 
         let extra = (extra % 64 + 1) as usize;
 
@@ -826,7 +830,7 @@ mod tests {
     #[quickcheck]
     fn prop_parse_header_incremental_arrival(msg_length: ValidU24) {
         let payload_len = (msg_length.0 % 4096) as usize;
-        let header = Header::from_len(payload_len as u32, 1, 0).unwrap();
+        let header = Header::from_len(payload_len, 1, 0).unwrap();
         let total = Header::SIZE + payload_len;
 
         let mut full = vec![0u8; total];

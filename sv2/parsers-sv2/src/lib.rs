@@ -2463,7 +2463,7 @@ impl<'decoder> TryFrom<AnyMessage<'decoder>> for MessageFrame<AnyMessage<'decode
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
         MessageFrame::from_message(v, message_type, extension_type, channel_bit)
-            .ok_or(ParserError::BadPayloadSize)
+            .map_err(ParserError::BadPayloadSize)
     }
 }
 
@@ -2475,7 +2475,7 @@ impl TryFrom<AnyMessageOwned> for MessageFrame<AnyMessageOwned> {
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
         MessageFrame::from_message(v, message_type, extension_type, channel_bit)
-            .ok_or(ParserError::BadPayloadSize)
+            .map_err(ParserError::BadPayloadSize)
     }
 }
 
@@ -2489,7 +2489,7 @@ macro_rules! impl_owned_frame_try_from {
                 let channel_bit = v.channel_bit();
                 let message_type = v.message_type();
                 MessageFrame::from_message(v, message_type, extension_type, channel_bit)
-                    .ok_or(ParserError::BadPayloadSize)
+                    .map_err(ParserError::BadPayloadSize)
             }
         }
     };
@@ -2511,7 +2511,7 @@ impl<'decoder> TryFrom<MiningDeviceMessages<'decoder>>
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
         MessageFrame::from_message(v, message_type, extension_type, channel_bit)
-            .ok_or(ParserError::BadPayloadSize)
+            .map_err(ParserError::BadPayloadSize)
     }
 }
 
@@ -2523,7 +2523,7 @@ impl TryFrom<MiningDeviceMessagesOwned> for MessageFrame<MiningDeviceMessagesOwn
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
         MessageFrame::from_message(v, message_type, extension_type, channel_bit)
-            .ok_or(ParserError::BadPayloadSize)
+            .map_err(ParserError::BadPayloadSize)
     }
 }
 
@@ -2537,7 +2537,7 @@ impl<'decoder> TryFrom<TemplateDistribution<'decoder>>
         let channel_bit = v.channel_bit();
         let message_type = v.message_type();
         MessageFrame::from_message(v, message_type, extension_type, channel_bit)
-            .ok_or(ParserError::BadPayloadSize)
+            .map_err(ParserError::BadPayloadSize)
     }
 }
 

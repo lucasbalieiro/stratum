@@ -362,8 +362,8 @@ mod prop_tests {
     ) -> TestResult {
         let frame =
             match MessageFrame::<TestMessage>::from_message(msg, msg_type, ext_type, channel_msg) {
-                Some(f) => f,
-                None => return TestResult::discard(),
+                Ok(f) => f,
+                Err(_) => return TestResult::discard(),
             };
 
         let mut encoder = Encoder::new();
@@ -380,12 +380,12 @@ mod prop_tests {
     #[quickcheck]
     fn prop_encoder_reusable(msg1: TestMessage, msg2: TestMessage, msg_type: u8) -> TestResult {
         let frame1 = match MessageFrame::<TestMessage>::from_message(msg1, msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
+            Ok(f) => f,
+            Err(_) => return TestResult::discard(),
         };
         let frame2 = match MessageFrame::<TestMessage>::from_message(msg2, msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
+            Ok(f) => f,
+            Err(_) => return TestResult::discard(),
         };
 
         let mut encoder = Encoder::new();
@@ -409,8 +409,8 @@ mod prop_tests {
     ) -> TestResult {
         let frame =
             match MessageFrame::<TestMessage>::from_message(msg, msg_type, ext_type, channel_msg) {
-                Some(f) => f,
-                None => return TestResult::discard(),
+                Ok(f) => f,
+                Err(_) => return TestResult::discard(),
             };
 
         let (mut sender_enc, _) = make_transport_state_pair();
@@ -475,12 +475,12 @@ mod prop_tests {
         msg_type: u8,
     ) -> TestResult {
         let frame1 = match MessageFrame::<TestMessage>::from_message(msg1, msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
+            Ok(f) => f,
+            Err(_) => return TestResult::discard(),
         };
         let frame2 = match MessageFrame::<TestMessage>::from_message(msg2, msg_type, 0, false) {
-            Some(f) => f,
-            None => return TestResult::discard(),
+            Ok(f) => f,
+            Err(_) => return TestResult::discard(),
         };
 
         let (mut sender_enc, _) = make_transport_state_pair();

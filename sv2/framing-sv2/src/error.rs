@@ -22,6 +22,10 @@ pub enum Error {
 
     /// The buffer is too short to hold a [`crate::header::Header`].
     UnexpectedHeaderLength(usize),
+
+    /// A message of the given serialized length does not fit the 24-bit `msg_length` field of a
+    /// [`crate::header::Header`].
+    PayloadTooLong(usize),
 }
 
 impl fmt::Display for Error {
@@ -41,6 +45,12 @@ impl fmt::Display for Error {
                 write!(
                     f,
                     "Unexpected `Header` length: `{actual_size}`, should be equal or more to {SV2_FRAME_HEADER_SIZE}"
+                )
+            }
+            PayloadTooLong(len) => {
+                write!(
+                    f,
+                    "Payload of `{len}` bytes does not fit the 24-bit `msg_length` of a `Header`"
                 )
             }
         }
