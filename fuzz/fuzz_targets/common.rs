@@ -3,6 +3,10 @@ use serde_json::Value;
 
 /// Round-trip serialization test for a message type.
 ///
+/// Generator mode with validation (4 args) produces valid wire bytes via a generator,
+/// runs a spec-constraint validation closure on the parsed message, then asserts
+/// byte-level stability and Display output equality.
+///
 /// Generator mode (3 args) produces valid wire bytes via a generator and
 /// asserts byte-level stability and Display output equality.
 ///
@@ -134,6 +138,69 @@ macro_rules! test_roundtrip {
                 stringify!($msg_type)
             );
         };
+    }};
+    // ---- generator mode with spec validation ----
+    ($msg_type:ty, $data:expr, $gen:expr, $validate:expr) => {{
+        let mut u = arbitrary::Unstructured::new(&$data);
+        if let Ok(bytes) = $gen(&mut u) {
+            let mut bytes = bytes;
+            if let Ok(parsed) = <$msg_type>::from_bytes(&mut bytes) {
+                $validate(&parsed);
+
+                let mut encoded_1 = vec![0u8; parsed.get_size()];
+                parsed
+                    .clone()
+                    .to_bytes(&mut encoded_1)
+                    .expect("Encoding failed after a successful parse");
+
+                let mut encoded_1_clone = encoded_1.clone();
+                let reparsed = <$msg_type>::from_bytes(&mut encoded_1_clone)
+                    .expect("Roundtrip failed: serializer produced invalid bytes");
+
+                let mut encoded_2 = vec![0u8; reparsed.get_size()];
+                reparsed
+                    .clone()
+                    .to_bytes(&mut encoded_2)
+                    .expect("Second encoding failed");
+
+                assert_eq!(encoded_1, encoded_2, "Serialization is not stable");
+                assert!(!encoded_1.is_empty(), "Encoded output must not be empty");
+                assert_eq!(
+                    encoded_1.len(),
+                    parsed.get_size(),
+                    "Encoded length must match get_size()"
+                );
+                assert_eq!(
+                    reparsed.get_size(),
+                    parsed.get_size(),
+                    "Roundtrip must preserve get_size()"
+                );
+                let display = parsed.to_string();
+                assert_eq!(
+                    display,
+                    reparsed.to_string(),
+                    "Display output mismatch"
+                );
+
+                let mut with_trailing = encoded_1.clone();
+                with_trailing.extend_from_slice(&$crate::common::TRAILING_JUNK);
+                let with_trailing_parsed = <$msg_type>::from_bytes(&mut with_trailing)
+                    .expect(concat!(stringify!($msg_type),
+                        ": trailing bytes after complete message must be ignored"));
+                assert_eq!(
+                    with_trailing_parsed.to_string(),
+                    display,
+                    "{}: trailing bytes changed decoded message",
+                    stringify!($msg_type)
+                );
+                assert_eq!(
+                    with_trailing_parsed.get_size(),
+                    parsed.get_size(),
+                    "{}: trailing bytes changed decoded size",
+                    stringify!($msg_type)
+                );
+            }
+        }
     }};
 }
 
@@ -332,6 +399,69 @@ macro_rules! test_datatype_roundtrip {
             // Spec 3.1: data types are self-delimiting. If we truncate a canonical
             // encoding and feed only a strict prefix to from_bytes, it must fail —
             // there aren't enough bytes to decode the full type.
+            for cut in $crate::common::prefix_cuts(encoded_1.len()) {
+                let mut truncated = encoded_1[..cut].to_vec();
+                assert!(
+                    <$datatype>::from_bytes(&mut truncated).is_err(),
+                    "{}: strict prefix ({} of {} bytes) decoded successfully",
+                    stringify!($datatype),
+                    cut,
+                    encoded_1.len()
+                );
+            }
+        }
+    }};
+
+    // ---- generator mode with spec validation: generic ----
+    ($datatype:ty, $data:expr, $gen:expr, $validate:expr) => {{
+        let mut u = arbitrary::Unstructured::new(&$data);
+        if let Ok(bytes) = $gen(&mut u) {
+            let mut bytes = bytes;
+            let parsed = <$datatype>::from_bytes(&mut bytes)
+                .expect("generator produced unparseable bytes");
+
+            $validate(&parsed);
+
+            let mut encoded_1 = vec![0u8; parsed.get_size()];
+            parsed
+                .clone()
+                .to_bytes(&mut encoded_1)
+                .expect("Encoding failed after a successful parse");
+
+            let mut encoded_1_clone = encoded_1.clone();
+            let reparsed = <$datatype>::from_bytes(&mut encoded_1_clone)
+                .expect("Roundtrip failed: serializer produced invalid bytes");
+
+            let mut encoded_2 = vec![0u8; reparsed.get_size()];
+            reparsed
+                .clone()
+                .to_bytes(&mut encoded_2)
+                .expect("Second encoding failed");
+
+            assert_eq!(encoded_1, encoded_2, "Serialization is not stable");
+            assert_eq!(
+                encoded_1.len(),
+                parsed.get_size(),
+                "Encoded length must match get_size()"
+            );
+            assert_eq!(
+                reparsed.get_size(),
+                parsed.get_size(),
+                "Roundtrip must preserve get_size()"
+            );
+
+            let mut with_trailing = encoded_1.clone();
+            with_trailing.extend_from_slice(&$crate::common::TRAILING_JUNK);
+            let with_trailing_parsed = <$datatype>::from_bytes(&mut with_trailing)
+                .expect(concat!(stringify!($datatype),
+                    ": trailing bytes after complete value must be ignored"));
+            assert_eq!(
+                with_trailing_parsed,
+                parsed,
+                "{}: trailing bytes changed decoded value",
+                stringify!($datatype)
+            );
+
             for cut in $crate::common::prefix_cuts(encoded_1.len()) {
                 let mut truncated = encoded_1[..cut].to_vec();
                 assert!(

@@ -2,6 +2,7 @@
 
 mod common;
 mod generators;
+mod spec_assertions;
 use arbitrary::Arbitrary;
 use binary_sv2::{Deserialize, GetSize, Serialize};
 use job_declaration_sv2::*;
@@ -34,7 +35,8 @@ fuzz_target!(|input: FuzzInput| {
             test_roundtrip!(DeclareMiningJobSuccess, data, generators::gen_declare_mining_job_success);
         }
         FuzzInput::DeclareMiningJobError(data) => {
-            test_roundtrip!(DeclareMiningJobError, data, generators::gen_declare_mining_job_error);
+            test_roundtrip!(DeclareMiningJobError, data, generators::gen_declare_mining_job_error,
+                spec_assertions::assert_declare_mining_job_error);
         }
         FuzzInput::ProvideMissingTransactions(data) => {
             test_roundtrip!(ProvideMissingTransactions, data, generators::gen_provide_missing_transactions);
@@ -43,7 +45,8 @@ fuzz_target!(|input: FuzzInput| {
             test_roundtrip!(ProvideMissingTransactionsSuccess, data, generators::gen_provide_missing_transactions_success);
         }
         FuzzInput::PushSolution(data) => {
-            test_roundtrip!(PushSolution, data, generators::gen_push_solution);
+            test_roundtrip!(PushSolution, data, generators::gen_push_solution,
+                spec_assertions::assert_push_solution);
         }
     }
 });

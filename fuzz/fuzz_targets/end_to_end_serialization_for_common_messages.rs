@@ -2,6 +2,7 @@
 
 mod common;
 mod generators;
+mod spec_assertions;
 use arbitrary::Arbitrary;
 use binary_sv2::{Deserialize, GetSize, Serialize};
 use common_messages_sv2::*;
@@ -19,10 +20,12 @@ enum FuzzInput {
 fuzz_target!(|input: FuzzInput| {
     match input {
         FuzzInput::SetupConnection(data) => {
-            test_roundtrip!(SetupConnection, data, generators::gen_setup_connection);
+            test_roundtrip!(SetupConnection, data, generators::gen_setup_connection,
+                spec_assertions::assert_setup_connection);
         }
         FuzzInput::SetupConnectionError(data) => {
-            test_roundtrip!(SetupConnectionError, data, generators::gen_setup_connection_error);
+            test_roundtrip!(SetupConnectionError, data, generators::gen_setup_connection_error,
+                spec_assertions::assert_setup_connection_error);
         }
         FuzzInput::SetupConnectionSuccess(data) => {
             test_roundtrip!(SetupConnectionSuccess, data, generators::gen_setup_connection_success);

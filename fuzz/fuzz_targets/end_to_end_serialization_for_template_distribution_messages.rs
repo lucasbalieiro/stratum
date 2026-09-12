@@ -2,6 +2,7 @@
 
 mod common;
 mod generators;
+mod spec_assertions;
 
 use arbitrary::Arbitrary;
 use binary_sv2::{Deserialize, GetSize, Serialize};
@@ -25,7 +26,8 @@ fuzz_target!(|input: FuzzInput| {
             test_roundtrip!(CoinbaseOutputConstraints, data, generators::gen_coinbase_output_constraints);
         }
         FuzzInput::NewTemplate(data) => {
-            test_roundtrip!(NewTemplate, data, generators::gen_new_template);
+            test_roundtrip!(NewTemplate, data, generators::gen_new_template,
+                spec_assertions::assert_new_template);
         }
         FuzzInput::RequestTransactionData(data) => {
             test_roundtrip!(RequestTransactionData, data, generators::gen_request_transaction_data);
@@ -34,7 +36,8 @@ fuzz_target!(|input: FuzzInput| {
             test_roundtrip!(RequestTransactionDataSuccess, data, generators::gen_request_transaction_data_success);
         }
         FuzzInput::RequestTransactionDataError(data) => {
-            test_roundtrip!(RequestTransactionDataError, data, generators::gen_request_transaction_data_error);
+            test_roundtrip!(RequestTransactionDataError, data, generators::gen_request_transaction_data_error,
+                spec_assertions::assert_request_transaction_data_error);
         }
         FuzzInput::SetNewPrevHash(data) => {
             test_roundtrip!(SetNewPrevHash, data, generators::gen_set_new_prev_hash_template);
