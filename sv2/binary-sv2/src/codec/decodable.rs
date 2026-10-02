@@ -1,8 +1,9 @@
 use crate::{
     codec::{GetSize, SizeHint},
     datatypes::{
-        B016MOwned, B0255Owned, B032Owned, B064KOwned, Mac, MacOwned, Signature, SignatureOwned,
-        Sv2DataType, U256Owned, B016M, B0255, B032, B064K, U24, U256,
+        B016MOwned, B0255Owned, B032Owned, B064KOwned, CoinbasePrefix, CoinbasePrefixOwned, Mac,
+        MacOwned, Signature, SignatureOwned, Sv2DataType, U256Owned, B016M, B0255, B032, B064K,
+        U24, U256,
     },
     Error,
 };
@@ -72,6 +73,8 @@ pub enum PrimitiveMarker {
     B032Owned,
     B0255,
     B0255Owned,
+    CoinbasePrefix,
+    CoinbasePrefixOwned,
     B064K,
     B064KOwned,
     B016M,
@@ -126,6 +129,8 @@ pub enum DecodablePrimitive<'a> {
     B032Owned(B032Owned),
     B0255(B0255<'a>),
     B0255Owned(B0255Owned),
+    CoinbasePrefix(CoinbasePrefix<'a>),
+    CoinbasePrefixOwned(CoinbasePrefixOwned),
     B064K(B064K<'a>),
     B064KOwned(B064KOwned),
     B016M(B016M<'a>),
@@ -176,6 +181,8 @@ impl SizeHint for PrimitiveMarker {
             Self::B032Owned => B032Owned::size_hint(data, offset),
             Self::B0255 => B0255::size_hint(data, offset),
             Self::B0255Owned => B0255Owned::size_hint(data, offset),
+            Self::CoinbasePrefix => CoinbasePrefix::size_hint(data, offset),
+            Self::CoinbasePrefixOwned => CoinbasePrefixOwned::size_hint(data, offset),
             Self::B064K => B064K::size_hint(data, offset),
             Self::B064KOwned => B064KOwned::size_hint(data, offset),
             Self::B016M => B016M::size_hint(data, offset),
@@ -320,6 +327,12 @@ impl PrimitiveMarker {
             Self::B0255Owned => Ok(DecodablePrimitive::B0255Owned(B0255Owned::from_bytes_(
                 &mut data[offset..],
             )?)),
+            Self::CoinbasePrefix => Ok(DecodablePrimitive::CoinbasePrefix(
+                CoinbasePrefix::from_bytes_(&mut data[offset..])?,
+            )),
+            Self::CoinbasePrefixOwned => Ok(DecodablePrimitive::CoinbasePrefixOwned(
+                CoinbasePrefixOwned::from_bytes_(&mut data[offset..])?,
+            )),
             Self::B064K => Ok(DecodablePrimitive::B064K(B064K::from_bytes_(
                 &mut data[offset..],
             )?)),
@@ -356,6 +369,8 @@ impl GetSize for DecodablePrimitive<'_> {
             DecodablePrimitive::B032Owned(v) => v.get_size(),
             DecodablePrimitive::B0255(v) => v.get_size(),
             DecodablePrimitive::B0255Owned(v) => v.get_size(),
+            DecodablePrimitive::CoinbasePrefix(v) => v.get_size(),
+            DecodablePrimitive::CoinbasePrefixOwned(v) => v.get_size(),
             DecodablePrimitive::B064K(v) => v.get_size(),
             DecodablePrimitive::B064KOwned(v) => v.get_size(),
             DecodablePrimitive::B016M(v) => v.get_size(),

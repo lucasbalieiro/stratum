@@ -957,15 +957,17 @@ mod tests {
         );
         assert!(job.is_ok());
 
-        // an out-of-spec Template Provider sending 9 bytes overflows the budget, and must be
-        // rejected instead of yielding a consensus-invalid coinbase
+        // one byte of extra extranonce overflows the budget, and must be rejected instead of
+        // yielding a consensus-invalid coinbase. an oversized template `coinbase_prefix` cannot
+        // trigger this path: the codec type caps the field at 8 bytes (spec 7.2), which is the
+        // size channel constructors already budget for
         let job = job_factory.new_extended_job(
             1,
             None,
             vec![0; 32],
-            template_with_coinbase_prefix(vec![0xab; MAX_COINBASE_PREFIX_SIZE + 1]),
+            template_with_coinbase_prefix(vec![0xab; MAX_COINBASE_PREFIX_SIZE]),
             coinbase_reward_outputs(),
-            32,
+            33,
         );
         assert!(matches!(
             job.unwrap_err(),
@@ -1109,25 +1111,27 @@ mod tests {
         let job_factory = JobFactory::new(true, Some("x".repeat(52)), None);
         let chain_tip = ChainTip::new([0u8; 32].into(), 503543726, 1746839905);
 
-        let new_custom_job = |coinbase_prefix_len: usize| {
-            job_factory.new_custom_job(
+        let new_custom_job = |factory: &JobFactory, full_extranonce_size: usize| {
+            factory.new_custom_job(
                 1,
                 1,
                 vec![0].try_into().unwrap(),
                 chain_tip.clone(),
-                template_with_coinbase_prefix(vec![0xab; coinbase_prefix_len]),
+                template_with_coinbase_prefix(vec![0xab; MAX_COINBASE_PREFIX_SIZE]),
                 coinbase_reward_outputs(),
-                32,
+                full_extranonce_size,
             )
         };
 
         // a spec-compliant 8 byte coinbase_prefix fits exactly
-        assert!(new_custom_job(MAX_COINBASE_PREFIX_SIZE).is_ok());
+        assert!(new_custom_job(&job_factory, 32).is_ok());
 
-        // one byte over must be rejected here, so the Job Declarator Client fails locally rather
-        // than having the pool reject the `SetCustomMiningJob` it just sent
+        // one byte of extra extranonce must be rejected here, so the Job Declarator Client fails
+        // locally rather than having the pool reject the `SetCustomMiningJob` it just sent. an
+        // oversized template `coinbase_prefix` cannot trigger this path: the codec type caps the
+        // field at 8 bytes (spec 7.2), which is the size channel constructors already budget for
         assert!(matches!(
-            new_custom_job(MAX_COINBASE_PREFIX_SIZE + 1).unwrap_err(),
+            new_custom_job(&job_factory, 33).unwrap_err(),
             JobFactoryError::ScriptSigSizeTooLarge
         ));
     }

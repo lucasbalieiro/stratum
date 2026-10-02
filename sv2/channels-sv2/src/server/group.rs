@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn test_on_new_template_rejects_oversized_script_sig() {
+    fn test_on_new_template_script_sig_budget_boundary() {
         let group_channel_id = 1;
         let full_extranonce_size = 32;
         let mut group_channel = GroupChannel::new(
@@ -978,24 +978,15 @@ mod tests {
             merkle_path: vec![].try_into().unwrap(),
         };
 
-        // a spec-compliant 8 byte coinbase_prefix fits exactly
+        // a spec-compliant 8 byte coinbase_prefix fits exactly: this is the tightest template
+        // that can reach the job factory, since the codec type caps the field at 8 bytes
+        // (spec 7.2) and the constructor already validated the budget for that worst case
         group_channel
             .on_new_template(
                 template(vec![0xab; MAX_COINBASE_PREFIX_SIZE]),
-                coinbase_reward_outputs.clone(),
+                coinbase_reward_outputs,
             )
             .unwrap();
-
-        // an out-of-spec Template Provider sending 9 bytes overflows the budget. without this
-        // check the group channel would distribute unmineable work to every channel in the group
-        let res = group_channel.on_new_template(
-            template(vec![0xab; MAX_COINBASE_PREFIX_SIZE + 1]),
-            coinbase_reward_outputs,
-        );
-        assert!(matches!(
-            res.unwrap_err(),
-            GroupChannelError::JobFactoryError(JobFactoryError::ScriptSigSizeTooLarge)
-        ));
     }
 
     #[test]

@@ -142,6 +142,7 @@ impl_get_marker!(
     (Signature<'_>, Signature),
     (B032<'_>, B032),
     (B0255<'_>, B0255),
+    (CoinbasePrefix<'_>, CoinbasePrefix),
     (B064K<'_>, B064K),
     (B016M<'_>, B016M),
     (U256Owned, U256Owned),
@@ -149,6 +150,7 @@ impl_get_marker!(
     (SignatureOwned, SignatureOwned),
     (B032Owned, B032Owned),
     (B0255Owned, B0255Owned),
+    (CoinbasePrefixOwned, CoinbasePrefixOwned),
     (B064KOwned, B064KOwned),
     (B016MOwned, B016MOwned),
 );
@@ -166,6 +168,7 @@ impl_decodable!(
     (Signature<'a>, Signature),
     (B032<'a>, B032),
     (B0255<'a>, B0255),
+    (CoinbasePrefix<'a>, CoinbasePrefix),
     (B064K<'a>, B064K),
     (B016M<'a>, B016M),
     (U256Owned, U256Owned),
@@ -173,6 +176,7 @@ impl_decodable!(
     (SignatureOwned, SignatureOwned),
     (B032Owned, B032Owned),
     (B0255Owned, B0255Owned),
+    (CoinbasePrefixOwned, CoinbasePrefixOwned),
     (B064KOwned, B064KOwned),
     (B016MOwned, B016MOwned),
 );
@@ -190,6 +194,7 @@ impl_try_from_decodable_primitive!(
     (Signature<'a>, Signature),
     (B032<'a>, B032),
     (B0255<'a>, B0255),
+    (CoinbasePrefix<'a>, CoinbasePrefix),
     (B064K<'a>, B064K),
     (B016M<'a>, B016M),
 );
@@ -207,6 +212,7 @@ impl_try_from_decodable_field!(
     Signature<'a>,
     B032<'a>,
     B0255<'a>,
+    CoinbasePrefix<'a>,
     B064K<'a>,
     B016M<'a>,
     U256Owned,
@@ -214,6 +220,7 @@ impl_try_from_decodable_field!(
     SignatureOwned,
     B032Owned,
     B0255Owned,
+    CoinbasePrefixOwned,
     B064KOwned,
     B016MOwned,
 );
@@ -224,6 +231,7 @@ impl_try_from_decodable_primitive_owned!(
     (SignatureOwned, Signature, SignatureOwned),
     (B032Owned, B032, B032Owned),
     (B0255Owned, B0255, B0255Owned),
+    (CoinbasePrefixOwned, CoinbasePrefix, CoinbasePrefixOwned),
     (B064KOwned, B064K, B064KOwned),
     (B016MOwned, B016M, B016MOwned),
 );
@@ -241,6 +249,7 @@ impl_encodable_field_conversion!(
     (Signature<'a>, Signature),
     (B032<'a>, B032),
     (B0255<'a>, B0255),
+    (CoinbasePrefix<'a>, CoinbasePrefix),
     (B064K<'a>, B064K),
     (B016M<'a>, B016M),
     (U256Owned, U256Owned),
@@ -248,6 +257,7 @@ impl_encodable_field_conversion!(
     (SignatureOwned, SignatureOwned),
     (B032Owned, B032Owned),
     (B0255Owned, B0255Owned),
+    (CoinbasePrefixOwned, CoinbasePrefixOwned),
     (B064KOwned, B064KOwned),
     (B016MOwned, B016MOwned),
 );
@@ -265,6 +275,7 @@ impl_field_marker_from_owned!(
     (SignatureOwned, SignatureOwned),
     (B032Owned, B032Owned),
     (B0255Owned, B0255Owned),
+    (CoinbasePrefixOwned, CoinbasePrefixOwned),
     (B064KOwned, B064KOwned),
     (B016MOwned, B016MOwned),
 );
@@ -275,6 +286,7 @@ impl_field_marker_from_borrowed!(
     (Inner<'a, true, 64, 0, 0>, Signature),
     (Inner<'a, false, 1, 1, 32>, B032),
     (Inner<'a, false, 1, 1, 255>, B0255),
+    (Inner<'a, false, 1, 1, 8>, CoinbasePrefix),
     (Inner<'a, false, 1, 2, { 2_usize.pow(16) - 1 }>, B064K),
     (Inner<'a, false, 1, 3, { 2_usize.pow(24) - 1 }>, B016M),
 );

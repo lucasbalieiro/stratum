@@ -59,6 +59,14 @@ pub type B032Owned = InnerOwned<false, 1, 1, 32>;
 /// represented using the `Inner` type with a 1-byte header.
 pub type B0255<'a> = Inner<'a, false, 1, 1, 255>;
 pub type B0255Owned = InnerOwned<false, 1, 1, 255>;
+/// Type alias for a variable-sized byte array with a maximum size of 8 bytes,
+/// represented using the `Inner` type with a 1-byte header.
+///
+/// Not a distinct wire type: it shares the `B0_255` encoding, and additionally enforces the
+/// Sv2 spec constraint that a `coinbase_prefix` payload is up to 8 bytes (not including the
+/// length byte), as described for `NewTemplate` (Template Distribution Protocol §7.2).
+pub type CoinbasePrefix<'a> = Inner<'a, false, 1, 1, 8>;
+pub type CoinbasePrefixOwned = InnerOwned<false, 1, 1, 8>;
 /// Type alias for a variable-sized string with a maximum size of 255 bytes,
 /// represented using the `Inner` type with a 1-byte header.
 pub type Str0255<'a> = Inner<'a, false, 1, 1, 255>;
@@ -109,6 +117,18 @@ impl B0255<'_> {
 impl B0255Owned {
     pub fn as_hex(&self) -> String {
         format!("B0255({})", HexPrefix(self.as_bytes()))
+    }
+}
+
+impl CoinbasePrefix<'_> {
+    pub fn as_hex(&self) -> String {
+        format!("CoinbasePrefix({})", HexPrefix(self.as_bytes()))
+    }
+}
+
+impl CoinbasePrefixOwned {
+    pub fn as_hex(&self) -> String {
+        format!("CoinbasePrefix({})", HexPrefix(self.as_bytes()))
     }
 }
 

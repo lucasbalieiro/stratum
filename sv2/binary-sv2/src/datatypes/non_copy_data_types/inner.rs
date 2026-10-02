@@ -692,8 +692,8 @@ impl<const ISFIXED: bool, const SIZE: usize, const HEADERSIZE: usize, const MAXS
 mod test {
     use super::{Inner, InnerOwned, ERROR_SAMPLE_LEN, MAX_DISPLAY_BYTES};
     use crate::{
-        B032Owned, B064KOwned, Error, GetSize, SignatureOwned, SizeHint, U256Owned, B032, B064K,
-        U256,
+        B032Owned, B064KOwned, CoinbasePrefix, CoinbasePrefixOwned, Error, GetSize, SignatureOwned,
+        SizeHint, Sv2DataType, U256Owned, B032, B064K, U256,
     };
     extern crate std;
     use self::std::panic::catch_unwind;
@@ -842,6 +842,35 @@ mod test {
     fn variable_payload_length_must_fit_header() {
         assert!(InnerOwned::<false, 1, 1, 255>::new(vec![0; 255]).is_ok());
         assert!(InnerOwned::<false, 1, 1, 255>::new(vec![0; 256]).is_err());
+    }
+
+    // `coinbase_prefix` is typed `B0_255` in the spec tables, but both field descriptions cap
+    // the payload at 8 bytes (Template Distribution Protocol §7.2), so the wrapper enforces
+    // that ceiling on construction, encoding size hints, and decoding.
+    #[test]
+    fn coinbase_prefix_rejects_more_than_eight_bytes() {
+        let max_payload = vec![0xAB_u8; 8];
+        let oversized = vec![0xAB_u8; 9];
+
+        assert!(CoinbasePrefixOwned::new(max_payload.clone()).is_ok());
+        assert!(CoinbasePrefixOwned::try_from(oversized.clone()).is_err());
+
+        // the 1-byte length header is unchanged, so valid payloads encode exactly like B0_255
+        let value = CoinbasePrefix::new(&max_payload).unwrap();
+        let mut encoded = vec![0_u8; value.get_size()];
+        value.to_slice(&mut encoded).unwrap();
+        assert_eq!(encoded[0], 8);
+        assert_eq!(&encoded[1..], max_payload.as_slice());
+
+        // decoding honors the same ceiling, rejecting the length prefix before reading past it
+        let mut frame = std::vec![9_u8];
+        frame.extend_from_slice(&oversized);
+        match <CoinbasePrefix<'_> as SizeHint>::size_hint(&frame, 0) {
+            Err(Error::ValueExceedsMaxSize(false, 1, 1, 8, _, 9)) => {}
+            other => panic!("unexpected result: {other:?}"),
+        }
+        let mut oversized_frame = frame.clone();
+        assert!(CoinbasePrefix::from_bytes_(&mut oversized_frame).is_err());
     }
 
     #[test]

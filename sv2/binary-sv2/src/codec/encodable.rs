@@ -1,8 +1,9 @@
 use crate::{
     codec::GetSize,
     datatypes::{
-        B016MOwned, B0255Owned, B032Owned, B064KOwned, Mac, MacOwned, Signature, SignatureOwned,
-        Sv2DataType, U256Owned, B016M, B0255, B032, B064K, U24, U256,
+        B016MOwned, B0255Owned, B032Owned, B064KOwned, CoinbasePrefix, CoinbasePrefixOwned, Mac,
+        MacOwned, Signature, SignatureOwned, Sv2DataType, U256Owned, B016M, B0255, B032, B064K,
+        U24, U256,
     },
     Error,
 };
@@ -75,6 +76,9 @@ pub enum EncodablePrimitive<'a> {
     /// B0255 Primitive, representing a B0255 type
     B0255(B0255<'a>),
     B0255Owned(B0255Owned),
+    /// CoinbasePrefix Primitive, a B0_255 value capped at 8 payload bytes by the Sv2 spec
+    CoinbasePrefix(CoinbasePrefix<'a>),
+    CoinbasePrefixOwned(CoinbasePrefixOwned),
     /// B064K Primitive, representing a B064K type
     B064K(B064K<'a>),
     B064KOwned(B064KOwned),
@@ -108,6 +112,8 @@ impl EncodablePrimitive<'_> {
             Self::B032Owned(v) => v.to_slice(dst),
             Self::B0255(v) => v.to_slice(dst),
             Self::B0255Owned(v) => v.to_slice(dst),
+            Self::CoinbasePrefix(v) => v.to_slice(dst),
+            Self::CoinbasePrefixOwned(v) => v.to_slice(dst),
             Self::B064K(v) => v.to_slice(dst),
             Self::B064KOwned(v) => v.to_slice(dst),
             Self::B016M(v) => v.to_slice(dst),
@@ -137,6 +143,8 @@ impl GetSize for EncodablePrimitive<'_> {
             Self::B032Owned(v) => v.get_size(),
             Self::B0255(v) => v.get_size(),
             Self::B0255Owned(v) => v.get_size(),
+            Self::CoinbasePrefix(v) => v.get_size(),
+            Self::CoinbasePrefixOwned(v) => v.get_size(),
             Self::B064K(v) => v.get_size(),
             Self::B064KOwned(v) => v.get_size(),
             Self::B016M(v) => v.get_size(),

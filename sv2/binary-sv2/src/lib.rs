@@ -24,6 +24,7 @@
 //! Signature<-> SIGNATURE
 //! B032     <-> B0_32   
 //! B0255    <-> B0_255
+//! CoinbasePrefix <-> B0_255 with the spec's 8-byte `coinbase_prefix` payload cap
 //! B064K    <-> B0_64K
 //! B016M    <-> B0_16M
 //! Pubkey   <-> PUBKEY
@@ -66,10 +67,10 @@ pub use encodable::Encodable as Serialize;
 mod codec;
 mod datatypes;
 pub use datatypes::{
-    B016MOwned, B0255Owned, B032Owned, B064KOwned, EllSwiftPubKey, EllSwiftPubKeyOwned, Mac,
-    MacOwned, PubKey, PubKeyOwned, Seq0255, Seq0255Owned, Seq064K, Seq064KOwned, Signature,
-    SignatureOwned, Str0255, Str0255Owned, Sv2DataType, Sv2Option, Sv2OptionOwned, U256Owned,
-    B016M, B0255, B032, B064K, ERROR_SAMPLE_LEN, U24, U256,
+    B016MOwned, B0255Owned, B032Owned, B064KOwned, CoinbasePrefix, CoinbasePrefixOwned,
+    EllSwiftPubKey, EllSwiftPubKeyOwned, Mac, MacOwned, PubKey, PubKeyOwned, Seq0255, Seq0255Owned,
+    Seq064K, Seq064KOwned, Signature, SignatureOwned, Str0255, Str0255Owned, Sv2DataType,
+    Sv2Option, Sv2OptionOwned, U256Owned, B016M, B0255, B032, B064K, ERROR_SAMPLE_LEN, U24, U256,
 };
 
 pub use crate::codec::{
