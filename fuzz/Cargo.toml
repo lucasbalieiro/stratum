@@ -96,3 +96,9 @@ name = "fuzz_sv2_message_pipeline"
 path = "fuzz_targets/fuzz_sv2_message_pipeline.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_noise_codec_roundtrip"
+path = "fuzz_targets/fuzz_noise_codec_roundtrip.rs"
+test = false
+doc = false
