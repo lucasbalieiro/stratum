@@ -44,9 +44,11 @@ struct FuzzInput {
     cert_validity: u32,
     // Message payload to encrypt and decrypt (fuzzed data)
     message: Vec<u8>,
-    // Whether to corrupt message/handshake with bit flips
-    should_corrupt_message: bool,
-    // Index into the message/handshake where corruption occurs
+    // Whether to corrupt the responder's handshake message with a bit flip
+    corrupt_handshake: bool,
+    // Whether to corrupt the encrypted transport message with a bit flip
+    corrupt_transport: bool,
+    // Index into the message where corruption occurs
     corruption_index: usize,
     // Seed for generating cryptographic keys
     rand_seed: u64,
@@ -75,7 +77,15 @@ fn maybe_corrupt_message(should_corrupt: bool, corruption_index: usize, message:
 // 4. Error handling for corrupted data and mismatched peers
 //
 // The fuzzer validates both success cases (valid handshake + clean message)
-// and failure cases (corrupted messages should fail, wrong peer should fail).
+// and failure cases (corrupted handshake, corrupted transport message, and
+// wrong peer should all fail their respective protocol step).
+//
+// Every byte of the responder's handshake message is authenticated by the
+// Noise protocol (the ephemeral key is mix-hashed and the remaining segments
+// carry AEAD MAC tags), so any bit flip in it must make the initiator's
+// handshake step fail. The fuzzer enforces this expectation, so a corrupted
+// handshake that is silently accepted is detected as a crash instead of
+// proceeding to the transport phase.
 fuzz_target!(|input: FuzzInput| {
     let mut secret_message = input.message.clone();
 
@@ -119,7 +129,7 @@ fuzz_target!(|input: FuzzInput| {
 
     // Optionally corrupt the responder's handshake message to test error handling
     maybe_corrupt_message(
-        input.should_corrupt_message,
+        input.corrupt_handshake,
         input.corruption_index,
         &mut second_message,
     );
@@ -134,18 +144,23 @@ fuzz_target!(|input: FuzzInput| {
                     "Initiator should have failed handshake with a peer different from responder"
                 );
             }
+            if input.corrupt_handshake {
+                panic!(
+                    "Initiator should have failed handshake with a corrupted second handshake message"
+                );
+            }
             state
         }
         Err(e) => {
             // If we didn't use a wrong peer AND didn't corrupt, handshake should succeed
-            if input.peer_mode != PeerMode::PeerDifferentFromResponder
-                && !input.should_corrupt_message
-            {
+            if input.peer_mode != PeerMode::PeerDifferentFromResponder && !input.corrupt_handshake {
                 panic!("Initiator should have succeeded handshake with known peer: {e:?}");
             }
             return;
         }
     };
+    // From here on the handshake is guaranteed clean: a corrupted handshake can only
+    // leave the match above through the early return or a panic.
 
     // ========== Encrypted Message Phase ==========
 
@@ -156,7 +171,7 @@ fuzz_target!(|input: FuzzInput| {
 
     // Optionally corrupt the encrypted message to test decryption failure handling
     maybe_corrupt_message(
-        input.should_corrupt_message,
+        input.corrupt_transport,
         input.corruption_index,
         &mut secret_message,
     );
@@ -165,13 +180,13 @@ fuzz_target!(|input: FuzzInput| {
     match responder_state.decrypt(&mut secret_message) {
         Ok(()) => {
             // If we corrupted the message, decryption should have failed
-            if input.should_corrupt_message {
+            if input.corrupt_transport {
                 panic!("Responder should have failed to decrypt corrupted message");
             }
         }
         Err(e) => {
             // If message wasn't corrupted, decryption should succeed
-            if !input.should_corrupt_message {
+            if !input.corrupt_transport {
                 panic!("Responder should have succeeded to decrypt uncorrupted message: {e:?}");
             }
             return;
