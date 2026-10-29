@@ -17,6 +17,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4.10"
 arbitrary = { version = "1.4.2", features = ["derive"] }
 binary_sv2 = { path = "../sv2/binary-sv2"}
+parsers_sv2 = { path = "../sv2/parsers-sv2" }
+extensions_sv2 = { path = "../sv2/extensions-sv2" }
 noise_sv2 = { path = "../sv2/noise-sv2" }
 framing_sv2 = { path = "../sv2/framing-sv2" }
 codec_sv2 = { path = "../sv2/codec-sv2", features = ["noise_sv2", "with_buffer_pool"]}
@@ -30,14 +32,14 @@ sv1_api = { path = "../sv1" }
 serde_json = { version = "1.0.64", default-features = false, features = ["alloc"] }
 
 [[bin]]
-name = "deserialize_sv2frame"
-path = "fuzz_targets/deserialize_sv2frame.rs"
+name = "fuzz_sv2_frame_header"
+path = "fuzz_targets/fuzz_sv2_frame_header.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "deserialize_stdframe"
-path = "fuzz_targets/deserialize_stdframe.rs"
+name = "fuzz_sv2_message_frame_roundtrip"
+path = "fuzz_targets/fuzz_sv2_message_frame_roundtrip.rs"
 test = false
 doc = false
 
@@ -86,5 +88,11 @@ doc = false
 [[bin]]
 name = "fuzz_sv1_method_parsers"
 path = "fuzz_targets/fuzz_sv1_method_parsers.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_sv2_message_pipeline"
+path = "fuzz_targets/fuzz_sv2_message_pipeline.rs"
 test = false
 doc = false

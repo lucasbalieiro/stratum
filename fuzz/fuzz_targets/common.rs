@@ -349,3 +349,235 @@ pub fn gen_json_value(u: &mut Unstructured<'_>, depth: u8) -> arbitrary::Result<
         }
     })
 }
+
+/// Shared oracle for a parsed Sv2 message payload.
+///
+/// Returns `true` when `parse_message_frame_with_tlvs` succeeds and every
+/// invariant below holds; returns `false` when parsing fails (which is expected
+/// for arbitrary input). Panics indicate a real bug.
+#[allow(dead_code)]
+pub fn check_parsed_message(
+    header: framing_sv2::header::Header,
+    payload: &mut [u8],
+    canonical_payload: Option<&[u8]>,
+    negotiated_extensions: &[u16],
+) -> bool {
+    use binary_sv2::GetSize;
+    use codec_sv2::Encoder;
+    use framing_sv2::framing::MessageFrame;
+    use parsers_sv2::{parse_message_frame_with_tlvs, AnyMessageOwned, IsSv2Message, Tlv, TlvList};
+
+    let payload_length = payload.len();
+    assert_eq!(
+        header.payload_length(),
+        payload_length,
+        "decoded frame header declares {} payload bytes, but the frame carries {payload_length}",
+        header.payload_length()
+    );
+
+    let payload_snapshot = payload.to_vec();
+    let (message, tlvs) = match parse_message_frame_with_tlvs(header, payload, negotiated_extensions)
+    {
+        Ok(parsed) => parsed,
+        Err(_) => return false,
+    };
+
+    let message_size = message.get_size();
+    assert!(
+        message_size <= payload_length,
+        "{} consumed {message_size} bytes from a {payload_length}-byte payload",
+        message.message_type()
+    );
+
+    // Any panic here is a finding: Display must not trust the decoded values.
+    let _ = message.to_string();
+
+    let message_type = message.message_type();
+    let extension_type = message.extension_type();
+    let channel_bit = message.channel_bit();
+
+    if let Some(tlvs) = &tlvs {
+        assert!(!tlvs.is_empty(), "TLV extraction returned an empty list");
+        for tlv in tlvs {
+            assert_eq!(
+                usize::from(tlv.length),
+                tlv.value.len(),
+                "TLV length {} disagrees with its {} value bytes",
+                tlv.length,
+                tlv.value.len()
+            );
+            assert!(
+                negotiated_extensions.contains(&tlv.r#type.extension_type),
+                "TLV extension type 0x{:04x} was not negotiated",
+                tlv.r#type.extension_type
+            );
+
+            let encoded = tlv.encode().expect("a decoded TLV must encode again");
+            let decoded = Tlv::decode(&encoded).expect("an encoded TLV must decode again");
+            assert_eq!(decoded, *tlv, "TLV encode/decode is not stable");
+        }
+    }
+
+    // The parser splits the payload with `message.get_size()`. Repeating that
+    // split here catches a size that disagrees with what the message consumed.
+    let tlv_tail = &payload_snapshot[message_size..];
+    let re_extracted = TlvList::from_bytes(tlv_tail).for_extensions(negotiated_extensions);
+    match &tlvs {
+        Some(tlvs) => assert_eq!(
+            tlvs, &re_extracted,
+            "TLV extraction differs from re-extracting the payload tail"
+        ),
+        None => assert!(
+            re_extracted.is_empty(),
+            "TLV extraction returned None for a payload tail containing {} TLVs",
+            re_extracted.len()
+        ),
+    }
+
+    let owned = message.into_owned();
+
+    // Rebuilding a frame with its TLVs is only meaningful for standard
+    // messages: `build_frame_bytes_with_tlvs` derives the header extension
+    // type from the channel bit alone.
+    if extension_type == 0 {
+        if let Some(tlvs) = &tlvs {
+            let tlv_bytes: usize = tlvs.iter().map(|tlv| 5 + tlv.value.len()).sum();
+            if message_size + tlv_bytes <= framing_sv2::SV2_FRAME_MAX_PAYLOAD_SIZE {
+                let list = TlvList::from_slice(tlvs).expect("decoded TLVs must rebuild");
+
+                let rebuilt = list
+                    .build_frame_bytes_with_tlvs(owned.clone())
+                    .expect("a frame with its TLVs must rebuild");
+                let rebuilt_header = framing_sv2::header::Header::from_bytes(&rebuilt)
+                    .expect("the rebuilt frame must have a header");
+                let mut rebuilt_payload = rebuilt[framing_sv2::SV2_FRAME_HEADER_SIZE..].to_vec();
+                let (rebuilt_message, rebuilt_tlvs) = parse_message_frame_with_tlvs(
+                    rebuilt_header,
+                    &mut rebuilt_payload,
+                    negotiated_extensions,
+                )
+                .expect("the rebuilt frame must parse");
+
+                assert_eq!(
+                    rebuilt_message.get_size(),
+                    message_size,
+                    "the rebuilt frame changed the message size"
+                );
+                assert_eq!(
+                    rebuilt_message.message_type(),
+                    message_type,
+                    "the rebuilt frame changed the message type"
+                );
+                assert_eq!(
+                    rebuilt_message.extension_type(),
+                    extension_type,
+                    "the rebuilt frame changed the extension type"
+                );
+                assert_eq!(
+                    rebuilt_message.channel_bit(),
+                    channel_bit,
+                    "the rebuilt frame changed the channel bit"
+                );
+                assert_eq!(
+                    rebuilt_tlvs.as_deref(),
+                    Some(tlvs.as_slice()),
+                    "the rebuilt frame changed its TLVs"
+                );
+            }
+        }
+    }
+
+    let frame = MessageFrame::<AnyMessageOwned>::try_from(owned)
+        .expect("a parsed message must fit in an Sv2 frame");
+
+    let canonical_header = frame.header();
+    assert_eq!(
+        canonical_header.msg_type(),
+        message_type,
+        "the rebuilt header has the wrong message type"
+    );
+    assert_eq!(
+        canonical_header.ext_type_without_channel_msg(),
+        extension_type,
+        "the rebuilt header has the wrong extension type"
+    );
+    assert_eq!(
+        canonical_header.channel_msg(),
+        channel_bit,
+        "the rebuilt header has the wrong channel bit"
+    );
+    assert_eq!(
+        canonical_header.payload_length(),
+        message_size,
+        "the rebuilt header has the wrong payload length"
+    );
+
+    let mut encoder = Encoder::new();
+    let encoded = encoder
+        .encode(frame)
+        .expect("the encoder must accept a frame built from a parsed message");
+    let encoded = encoded.as_ref();
+    assert_eq!(
+        encoded.len(),
+        framing_sv2::SV2_FRAME_HEADER_SIZE + message_size,
+        "the encoder wrote {} bytes for a {message_size}-byte message",
+        encoded.len()
+    );
+
+    if let Some(expected) = canonical_payload {
+        assert_eq!(
+            &encoded[framing_sv2::SV2_FRAME_HEADER_SIZE..],
+            expected,
+            "a generated payload did not survive the pipeline"
+        );
+    }
+
+    let reparsed_header = framing_sv2::header::Header::from_bytes(encoded)
+        .expect("the encoded frame must have a header");
+    let mut reparsed_payload = encoded[framing_sv2::SV2_FRAME_HEADER_SIZE..].to_vec();
+    let (reparsed, reparsed_tlvs) = parse_message_frame_with_tlvs(
+        reparsed_header,
+        &mut reparsed_payload,
+        negotiated_extensions,
+    )
+    .expect("a re-encoded frame must parse");
+    assert!(
+        reparsed_tlvs.is_none(),
+        "re-encoding a bare message produced a TLV tail"
+    );
+    assert_eq!(
+        reparsed.get_size(),
+        message_size,
+        "re-encoding changed the message size"
+    );
+    assert_eq!(
+        reparsed.message_type(),
+        message_type,
+        "re-encoding changed the message type"
+    );
+    assert_eq!(
+        reparsed.extension_type(),
+        extension_type,
+        "re-encoding changed the extension type"
+    );
+    assert_eq!(
+        reparsed.channel_bit(),
+        channel_bit,
+        "re-encoding changed the channel bit"
+    );
+
+    let reparsed_owned = reparsed.into_owned();
+    let reparsed_frame = MessageFrame::<AnyMessageOwned>::try_from(reparsed_owned)
+        .expect("a reparsed message must fit in an Sv2 frame");
+    let mut second_encoder = Encoder::new();
+    let re_encoded = second_encoder
+        .encode(reparsed_frame)
+        .expect("the encoder must accept a reparsed frame");
+    assert_eq!(
+        re_encoded.as_ref(),
+        encoded,
+        "re-encoding a parsed message is not byte-identical"
+    );
+
+    true
+}
