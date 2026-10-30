@@ -32,12 +32,6 @@ sv1_api = { path = "../sv1" }
 serde_json = { version = "1.0.64", default-features = false, features = ["alloc"] }
 
 [[bin]]
-name = "fuzz_sv2_frame_header"
-path = "fuzz_targets/fuzz_sv2_frame_header.rs"
-test = false
-doc = false
-
-[[bin]]
 name = "fuzz_sv2_message_frame_roundtrip"
 path = "fuzz_targets/fuzz_sv2_message_frame_roundtrip.rs"
 test = false
@@ -88,12 +82,6 @@ doc = false
 [[bin]]
 name = "fuzz_sv1_method_parsers"
 path = "fuzz_targets/fuzz_sv1_method_parsers.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "fuzz_sv2_message_pipeline"
-path = "fuzz_targets/fuzz_sv2_message_pipeline.rs"
 test = false
 doc = false
 
